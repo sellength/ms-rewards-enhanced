@@ -1,110 +1,32 @@
-# ==============================================================================
-# ⚠️ 部署状态与架构说明 (Deployment Status & Future Docker Architecture)
-#
-# 1. 当前实际部署方式：本项目当前直接从源码运行 (Source Mode, bare metal / macOS / Linux)，
-#    而非 Docker 容器。当前运行服务直接使用 Node.js (如 node web.mjs / ./web.sh) 运行。
-# 2. 未来 Docker 部署规划：Docker 是未来规划的部署方案，将通过 GitHub Actions 构建
-#    并发布至 Docker Hub。
-# 3. 本地镜像构建规范：
-#    上游默认的 'ghcr.io/thenetsky/microsoft-rewards-script:4' 仅为上游未修复示例，绝非当前部署！
-#    它缺少 Fluent Web 控制台与本轮全部鉴权、CSRF、凭据保护与反代安全修复。
-#    【重要】若未来要在 Docker 中运行本项目：
-#    必须同时指定本地构建上下文与独立的本地镜像标签（严禁单独配置 build 却保留上游 image 标签，
-#    否则 Docker 会拉取或将本地构建打标为上游未修复镜像）：
-#
-#    build:
-#        context: .
-#    image: microsoft-rewards-script:local
-#
-#    并使用显式构建命令启动：
-#    docker compose up -d --build
-# ==============================================================================
-
 services:
-    microsoft-rewards-script:
-        # ── 选项 1：未来 Docker 本地构建专属镜像（推荐） ──
-        # 必须同时指定 build 上下文与独立的本地镜像标签，并执行 docker compose up -d --build：
-        build:
-            context: .
-        image: microsoft-rewards-script:local
+  ms-rewards:
+    image: ghcr.io/sellength/ms-rewards-enhanced:0.1.0
+    container_name: ms-rewards-enhanced
+    restart: unless-stopped
+    ports:
+      - '3888:3888'                 # Fluent Web 控制台端口
+    volumes:
+      - ./config:/usr/src/microsoft-rewards-script/config
+      - ./sessions:/usr/src/microsoft-rewards-script/sessions
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: 'Asia/Shanghai'           # 容器时区
+      NODE_ENV: 'production'
+      WEB_MODE: 'true'              # 默认启用 Fluent Web 控制台模式
+      HOST: '0.0.0.0'               # 允许局域网远程访问
+      ALLOWED_HOSTS: 'localhost,127.0.0.1,192.168.*,10.*' # DNS 重绑定防护白名单
+      # RUN_ON_START: 'true'        # 容器启动时是否立即触发一次任务执行
+      # CRON_SCHEDULE: '0 8 * * *'  # 每日定时执行计划 (如每天 08:00)
+      # SKIP_RANDOM_SLEEP: 'false'  # 是否跳过启动前的随机拟人化防风控等待
 
-        # ── 选项 2：未来发布至 Docker Hub 后的专属修复镜像 ──
-        # image: your-dockerhub-user/microsoft-rewards-script:latest
+    healthcheck:
+      test: ['CMD-SHELL', 'scripts/docker/healthcheck.sh']
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
-        # ── 选项 3：上游原始示例镜像（⚠️ 缺少 Web 控制台与本轮安全修复，切勿用于 Web 模式） ──
-        # image: ghcr.io/thenetsky/microsoft-rewards-script:4
-        container_name: microsoft-rewards-script
-        restart: unless-stopped
-        volumes:
-            - ./config:/usr/src/microsoft-rewards-script/config
-            - ./sessions:/usr/src/microsoft-rewards-script/sessions
-        env_file:
-            # Load account credentials from the .env file (ACCOUNT_1_EMAIL, optional ACCOUNT_1_PASSWORD, etc.)
-            - path: .env
-        environment:
-            # ── Scheduler ──────────────────────────────────────
-            TZ: 'America/Toronto'
-            NODE_ENV: 'production'
-            # CRON_SCHEDULE is the *initial* default. It will run as default unless changed by the API
-            # API schedule changes are saved to ./config/schedule.json, delete
-            # that file to revert to the base CRON_SCHEDULE again.
-            CRON_SCHEDULE: '0 7 * * *' # use crontab.guru to customize your schedule
-            RUN_ON_START: 'true' # run script immediately on container start
-            SKIP_RANDOM_SLEEP: 'false'
-            #MIN_SLEEP_MINUTES: "5"
-            #MAX_SLEEP_MINUTES: "50"
-            #STUCK_PROCESS_TIMEOUT_HOURS: "8"
-
-            # ── Web Console mode (Fluent UI Dashboard) ────────
-            # Set WEB_MODE=true to run the Fluent Web dashboard on port 3888
-            #WEB_MODE: 'true'
-            #HOST: '0.0.0.0'                                # Listen on all interfaces for LAN/remote access
-            #ALLOWED_HOSTS: '192.168.1.100,localhost'       # Add your host LAN IP / domain for DNS Rebinding safety
-            #MS_WEB_PAIRING_SECRET: 'YourStrongCustomPassword2026' # Optional custom password (>= 15 chars). If omitted, an auto-generated high-entropy code is saved to host's ./sessions/.web_pairing_secret
-            #TRUSTED_PROXIES: '127.0.0.1,172.17.0.1'       # Only trust X-Forwarded-For/Proto from these proxy IPs
-
-            # ── API mode ──────────────────────────────────────
-            # Set API_MODE=true to run the API server for additional control options
-            #API_MODE: 'true'
-            #API_TOKEN: '${API_TOKEN}'             # required for API mode, see example.env
-            # API write/reveal capabilities are separate opt-ins and are off by default.
-            #API_ALLOW_SCHEDULE_WRITE: 'true'
-            #API_ALLOW_ENV_OVERRIDES: 'true'
-            #API_ALLOW_CONFIG_REVEAL: 'true'
-            #API_ALLOW_CONFIG_WRITE: 'true'
-
-            #  ── Configuration ──────────────────────────────────────
-            # Uncomment to override defaults, a full list of configuration options are in the README.
-            #CONFIG_CLUSTERS: '1'
-            #CONFIG_ACCOUNT_DELAY_MIN: '1min'
-            #CONFIG_ACCOUNT_DELAY_MAX: '3min'
-            # Continue even if Microsoft reports Fraud_UserWarning_BotScore_UX (not recommended).
-            #CONFIG_CONTINTUE_ON_BOT_WARNING: 'false'
-            # Block browser image/video/audio requests to reduce transferred media bytes.
-            #CONFIG_EXPERIMENTAL_BLOCK_MEDIA: 'false'
-            # Report the Edge browsing streak in the background (experimental).
-            #CONFIG_EXPERIMENTAL_EDGE_BROWSING: 'false'
-            # Only enable for a TLS-intercepting proxy whose certificate cannot be trusted normally.
-            #CONFIG_PROXY_IGNORE_CERTIFICATE_ERRORS: 'false'
-            #... add additional configuration overrides as needed
-
-        # ── Port mappings ──────────────────────────────────────────────
-        #ports:
-        #    - '3888:3888'                         # Web Console mode (or custom host port e.g. '4888:3888')
-        #    - '3010:3010'                         # API mode (API_MODE=true)
-
-        healthcheck:
-            test: ['CMD-SHELL', 'scripts/docker/healthcheck.sh']
-            interval: 60s
-            timeout: 5s
-            retries: 3
-            start_period: 30s
-
-        # ── Security & Sandbox ──────────────────────────────────────
-        # By default, entrypoint.sh drops privileges to the unprivileged 'node' user
-        # (UID 1000:1000) when executing automation and API services, allowing Chromium
-        # to run with sandboxing enabled (omitting --no-sandbox).
-        # You may also run the entire container directly as non-root:
-        #user: '1000:1000'
-        security_opt:
-            - no-new-privileges:true
+    security_opt:
+      - no-new-privileges:true
