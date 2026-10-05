@@ -37,7 +37,9 @@ export const URLs = {
     },
     platform: {
         origin: PLATFORM,
-        me: (channel: string) => `${PLATFORM}/dapi/me?channel=${channel}&options=613`,
+        me: (channel: string) => `${PLATFORM}/dapi/me?channel=${channel}&options=612`,
+        counters: (channel: string) => `${PLATFORM}/dapi/me?channel=${channel}&options=2`,
+        profile: (channel: string) => `${PLATFORM}/dapi/me?channel=${channel}&options=1`,
         edgeProfile: `${PLATFORM}/dapi/me?channel=edge&options=Profile,Promotions`,
         activities: `${PLATFORM}/dapi/me/activities`
     },

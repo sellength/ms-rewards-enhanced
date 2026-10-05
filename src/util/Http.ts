@@ -15,6 +15,7 @@ export interface HttpRequestConfig {
     data?: unknown
     timeout?: number
     responseType?: 'json' | 'text'
+    retryable?: boolean
 }
 
 export interface HttpResponse<T = unknown> {
@@ -127,6 +128,10 @@ async function send<T>(
     init: ImpitRequestInit,
     config: HttpRequestConfig
 ): Promise<HttpResponse<T>> {
+    const method = String(init.method ?? config.method ?? 'GET').toUpperCase()
+    const isIdempotent = ['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE'].includes(method)
+    const canRetry = config.retryable ?? (isIdempotent && method !== 'POST')
+
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         let responseStatus: number | undefined
 
@@ -154,7 +159,7 @@ async function send<T>(
                 status !== 425 &&
                 status !== 429
 
-            if (permanentClientError || attempt >= MAX_RETRIES) throw error
+            if (!canRetry || permanentClientError || attempt >= MAX_RETRIES) throw error
 
             await backoff(attempt + 1)
         }
@@ -222,4 +227,5 @@ export async function httpRequest<T = unknown>(config: HttpRequestConfig): Promi
     return send<T>(sharedInstance, url, init, config)
 }
 
+export { HttpClient }
 export default HttpClient

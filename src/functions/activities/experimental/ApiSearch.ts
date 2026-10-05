@@ -140,12 +140,12 @@ export class ApiSearch extends BaseActivity {
                 }
 
                 if (stagnant >= STAGNANT_LIMIT) {
-                    this.bot.logger.warn(
+                    this.bot.logger.error(
                         isMobile,
                         'SEARCH-BING',
-                        `No points for ${STAGNANT_LIMIT} searches in a row, aborting`
+                        `搜索已中断：连续 ${STAGNANT_LIMIT} 次搜索未获得积分 (0分)，疑似触发微软搜索冷却风控(15分钟)`
                     )
-                    break
+                    throw new Error(`搜索中断失败：连续 ${STAGNANT_LIMIT} 次搜索未获得积分 (0分)`)
                 }
 
                 await this.bot.utils.wait(
@@ -255,6 +255,15 @@ export class ApiSearch extends BaseActivity {
                 : stagnant >= tracker.stagnantLimit
                   ? `${tracker.stagnantLimit} idle searches`
                   : 'query pool exhausted'
+
+        if (stagnant >= tracker.stagnantLimit && !done) {
+            this.bot.logger.error(
+                isMobile,
+                tracker.context,
+                `Bonus searches interrupted | reason=10_consecutive_zero_points | ${tracker.progress()}`
+            )
+            throw new Error(`Bonus搜索中断失败：连续 ${tracker.stagnantLimit} 次搜索未获积分 (0分)`)
+        }
 
         this.bot.logger.info(
             isMobile,

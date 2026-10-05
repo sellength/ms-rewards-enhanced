@@ -1,7 +1,9 @@
 import { URLs } from '../../../constants/urls'
+import { BING_APP_CHANNEL } from '../../../constants/userAgents'
 import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import { BaseActivity } from '../BaseActivity'
+import { buildAppHeaders } from './AppRequest'
 
 export class DailyCheckIn extends BaseActivity {
     private gainedPoints: number = 0
@@ -14,6 +16,30 @@ export class DailyCheckIn extends BaseActivity {
                 this.bot.isMobile,
                 'DAILY-CHECK-IN',
                 'Skipping: App access token not available, this activity requires it!'
+            )
+            return
+        }
+
+        try {
+            const preflight = await this.bot.browser.func.getAppEarnablePoints()
+            if (preflight.checkIn <= 0) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'DAILY-CHECK-IN',
+                    '[PLAN] sapphireCheckIn skip_complete progress=1/1'
+                )
+                return
+            }
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'DAILY-CHECK-IN',
+                `[PLAN] sapphireCheckIn run_pending remaining=${preflight.checkIn}`
+            )
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'DAILY-CHECK-IN',
+                `[PLAN] sapphireCheckIn skip_state_unavailable | message=${error instanceof Error ? error.message : String(error)}`
             )
             return
         }
@@ -37,6 +63,8 @@ export class DailyCheckIn extends BaseActivity {
 
             const newBalance = Number(response?.data?.response?.balance ?? this.oldBalance)
             this.gainedPoints = newBalance - this.oldBalance
+            await this.bot.utils.wait(1000)
+            const verified = (await this.bot.browser.func.getAppEarnablePoints()).checkIn <= 0
 
             this.bot.logger.debug(
                 this.bot.isMobile,
@@ -44,21 +72,23 @@ export class DailyCheckIn extends BaseActivity {
                 `Balance delta after Daily Check-In | type=103 | previousBalance=${this.oldBalance} | currentBalance=${newBalance} | pointsGained=${this.gainedPoints}`
             )
 
-            if (this.gainedPoints > 0) {
+            if (verified) {
                 this.bot.userData.currentPoints = newBalance
-                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
+                if (this.gainedPoints > 0) {
+                    this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
+                }
 
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'DAILY-CHECK-IN',
-                    `Completed Daily Check-In | type=103 | pointsGained=${this.gainedPoints} | currentBalance=${newBalance}`,
+                    `Daily Check-In verified by today's SAAndroid counter | type=103 | pointsGained=${this.gainedPoints} | currentBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'DAILY-CHECK-IN',
-                    `Daily Check-In completed but no points gained | type=103 | pointsGained=0 | currentBalance=${newBalance}`
+                    `Daily Check-In submitted but today's SAAndroid counter is still incomplete | type=103 | currentBalance=${newBalance}`
                 )
             }
         } catch (error) {
@@ -75,7 +105,7 @@ export class DailyCheckIn extends BaseActivity {
             const jsonData = {
                 risk_context: {},
                 type: 103,
-                channel: 'SAIOS',
+                channel: BING_APP_CHANNEL,
                 attributes: {},
                 id: randomUUID(),
                 amount: 1,
@@ -91,19 +121,7 @@ export class DailyCheckIn extends BaseActivity {
             const request: HttpRequestConfig = {
                 url: URLs.platform.activities,
                 method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${this.bot.accessToken}`,
-                    'Content-Type': 'application/json',
-                    Accept: '*/*',
-                    'User-Agent':
-                        'Mozilla/5.0 (iPad; CPU iPad OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/605.1.15 BingSapphire/33.4.440603001',
-                    'X-Rewards-AppId': 'SAIOS/33.4.440603001',
-                    'X-Rewards-PartnerId': 'startapp',
-                    'X-Rewards-Country': this.bot.userData.geoLocale,
-                    'X-Rewards-Language': this.bot.userData.langCode,
-                    'X-Rewards-Flights': 'rwgobig',
-                    'X-Rewards-IsMobile': 'true'
-                },
+                headers: buildAppHeaders(this.bot, true),
                 data: JSON.stringify(jsonData)
             }
 

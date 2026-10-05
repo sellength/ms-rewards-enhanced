@@ -74,6 +74,7 @@ const AccountCountrySchema = z
     )
 
 const WebhookSchema = z.object({
+    enabled: z.boolean().default(true).optional(),
     discord: z
         .object({
             enabled: z.boolean(),
@@ -131,6 +132,11 @@ export const ConfigSchema = z.object({
             searchOnBing: z.boolean().default(true)
         })
         .default({ urlReward: true, searchOnBing: true }),
+    display: z
+        .object({
+            timeZone: z.string().default('auto')
+        })
+        .default({ timeZone: 'auto' }),
     searchOnBingLocalQueries: z.boolean(),
     globalTimeout: NumberOrString,
     searchSettings: z.object({
@@ -272,6 +278,9 @@ const defaultConfig: Config = {
     activities: {
         urlReward: true,
         searchOnBing: true
+    },
+    display: {
+        timeZone: 'auto'
     },
     searchOnBingLocalQueries: false,
     globalTimeout: '30sec',

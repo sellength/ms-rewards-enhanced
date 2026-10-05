@@ -83,7 +83,7 @@ export class PunchCards extends BaseActivity {
             }
         }
 
-        this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'Finished processing quests')
+        await this.verifyParentQuests(pending.map(parent => parent.offerId))
     }
 
     private async getParentQuests(): Promise<ParentQuest[] | null> {
@@ -134,14 +134,14 @@ export class PunchCards extends BaseActivity {
     private async solvePunchCard(parent: ParentQuest, apiCard: PunchCard | undefined): Promise<void> {
         const parentId = parent.offerId
         const title = parent.title || apiCard?.parentPromotion?.title || parentId
-        const children = await this.getQuestChildren(parentId, title)
-        if (!children) return
-
         const apiChildById = new Map(
             (apiCard?.childPromotions ?? [])
                 .filter(child => child.offerId)
                 .map(child => [child.offerId, child] as const)
         )
+        const children = await this.getQuestChildren(parentId, title, [...apiChildById.keys()])
+        if (!children) return
+
         const ordered = [...children].sort(
             (left, right) =>
                 (apiChildById.get(left.offerId)?.priority ?? Number.MAX_SAFE_INTEGER) -
@@ -200,7 +200,7 @@ export class PunchCards extends BaseActivity {
         this.bot.logger.info(
             this.bot.isMobile,
             'PUNCHCARD',
-            `Quest "${title}" ${remaining === 0 ? 'COMPLETE' : 'in progress'} | reported=${reported}` +
+            `Quest "${title}" submission pass finished | reported=${reported}` +
                 `${remaining ? ` | remaining=${remaining}` : ''} | pointsGained=${gained}` +
                 ` | currentBalance=${this.bot.userData.currentPoints}` +
                 `${parent.pointProgressMax > 0 ? ` | targetPoints=${parent.pointProgressMax}` : ''}`,
@@ -208,7 +208,43 @@ export class PunchCards extends BaseActivity {
         )
     }
 
-    private async getQuestChildren(parentId: string, title: string): Promise<QuestChild[] | null> {
+    private async verifyParentQuests(targetOfferIds: string[]): Promise<void> {
+        await this.bot.utils.wait(1000)
+        const fresh = await this.getParentQuests()
+        if (!fresh) {
+            this.bot.logger.warn(this.bot.isMobile, 'PUNCHCARD', 'Unable to verify quests after submission')
+            return
+        }
+
+        const targets = new Set(targetOfferIds)
+        const matched = fresh.filter(parent => targets.has(parent.offerId))
+        const remaining = matched.filter(parent => !parent.complete)
+        const missing = targetOfferIds.filter(offerId => !matched.some(parent => parent.offerId === offerId))
+
+        if (remaining.length === 0 && missing.length === 0) {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'PUNCHCARD',
+                `Punch Card completion verified by Microsoft | completed=${matched.length}/${targetOfferIds.length}`,
+                'green'
+            )
+            return
+        }
+
+        this.bot.logger.warn(
+            this.bot.isMobile,
+            'PUNCHCARD',
+            `Punch Cards remain incomplete or unverifiable according to Microsoft | remaining=${
+                remaining.map(parent => parent.offerId).join(', ') || 'none'
+            } | missing=${missing.join(', ') || 'none'}`
+        )
+    }
+
+    private async getQuestChildren(
+        parentId: string,
+        title: string,
+        knownChildOfferIds: readonly string[]
+    ): Promise<QuestChild[] | null> {
         try {
             const questUrl = URLs.rewards.quest(parentId)
             const html = await this.bot.browser.func.getRewardsPageHtml(questUrl, `/earn/quest/${parentId}`)
@@ -217,7 +253,7 @@ export class PunchCards extends BaseActivity {
                 return null
             }
 
-            const children = this.bot.browser.react.snapshotQuestPage(html)
+            const children = this.bot.browser.react.snapshotQuestPage(html, knownChildOfferIds)
             if (!children.length) {
                 this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', `No actionable children for "${title}"`)
                 return null

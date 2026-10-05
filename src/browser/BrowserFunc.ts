@@ -1,17 +1,20 @@
 import { URLs } from '../constants/urls'
-import { BING_APP_USER_AGENT } from '../constants/userAgents'
+import { BING_APP_CHANNEL } from '../constants/userAgents'
 import type { BrowserContext, Cookie, Page } from 'patchright'
 import type { HttpRequestConfig } from '../util/Http'
 
 import type { MicrosoftRewardsBot } from '../index'
 import type { PageSnapshot, ParsedOffer } from './ReactFunc'
 import { loadSession, saveStorageState } from '../util/SessionStore'
+import { sanitizeCookies } from '../util/SessionSanitizer'
 import { isBrowserClosedError } from '../util/Utils'
 
 import type { DashboardData } from './../interface/DashboardData'
-import type { AppUserData } from '../interface/AppUserData'
 import type { AppEarnablePoints, BrowserEarnablePoints } from '../interface/Points'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
+import { buildAppHeaders } from '../functions/activities/app/AppRequest'
+import { findReadToEarn } from '../functions/activities/app/AppState'
+import { edgeWebProgress, earnKeepEarningIds, selectPcKeepEarningPromotions } from '../../promotion-classification.cjs'
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
@@ -56,15 +59,9 @@ export default class BrowserFunc {
     async getAppDashboardData(): Promise<AppDashboardData> {
         try {
             const request: HttpRequestConfig = {
-                url: URLs.platform.me('SAIOS'),
+                url: URLs.platform.me(BING_APP_CHANNEL),
                 method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${this.bot.accessToken}`,
-                    'User-Agent': BING_APP_USER_AGENT,
-                    'X-Rewards-Country': this.bot.userData.geoLocale,
-                    'X-Rewards-Language': this.bot.userData.langCode,
-                    'X-Rewards-IsMobile': 'true'
-                }
+                headers: buildAppHeaders(this.bot)
             }
 
             const response = await this.bot.http.request(request)
@@ -97,21 +94,28 @@ export default class BrowserFunc {
                     0
                 ) ?? 0
 
-            const todayDate = this.bot.utils.getFormattedDate()
+            const todayDate = this.bot.dailySetDate
             const dailySetPoints =
-                data.dashboard.dailySetPromotions[todayDate]?.reduce(
+                (todayDate ? data.dashboard.dailySetPromotions[todayDate] : undefined)?.reduce(
                     (sum: number, x: { pointProgressMax: number; pointProgress: number }) =>
                         sum + (x.pointProgressMax - x.pointProgress),
                     0
                 ) ?? 0
 
+            const dailySetItems = todayDate ? (data.dashboard.dailySetPromotions[todayDate] ?? []) : []
+            const keepEarning = selectPcKeepEarningPromotions(
+                [
+                    ...(data.dashboard.morePromotions ?? []),
+                    ...(data.dashboard.morePromotionsWithoutPromotionalItems ?? [])
+                ],
+                dailySetItems,
+                await this.getKeepEarningOfferIds()
+            )
             const morePromotionsPoints =
-                data.dashboard.morePromotions?.reduce((sum, x) => {
-                    if (x.promotionType === 'urlreward' && x.exclusiveLockedFeatureStatus !== 'locked') {
-                        return sum + (x.pointProgressMax - x.pointProgress)
-                    }
-                    return sum
-                }, 0) ?? 0
+                keepEarning.reduce((sum, x) => {
+                    if (x.exclusiveLockedFeatureStatus === 'locked') return sum
+                    return sum + Math.max(0, (x.pointProgressMax || 0) - (x.pointProgress || 0))
+                }, 0)
 
             const totalEarnablePoints = desktopSearchPoints + mobileSearchPoints + dailySetPoints + morePromotionsPoints
 
@@ -134,45 +138,39 @@ export default class BrowserFunc {
 
     async getAppEarnablePoints(): Promise<AppEarnablePoints> {
         try {
-            const eligibleOffers = ['ENUS_readarticle3_30points', 'Gamification_Sapphire_DailyCheckIn']
-
             const request: HttpRequestConfig = {
-                url: URLs.platform.me('SAAndroid'),
+                url: URLs.platform.me(BING_APP_CHANNEL),
                 method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${this.bot.accessToken}`,
-                    'X-Rewards-Country': this.bot.userData.geoLocale,
-                    'X-Rewards-Language': this.bot.userData.langCode,
-                    'X-Rewards-ismobile': 'true'
-                }
+                headers: buildAppHeaders(this.bot)
             }
 
-            const response = await this.bot.http.request<AppUserData>(request)
-            const userData: AppUserData = response.data
-            const eligibleActivities = userData.response.promotions.filter(x =>
-                eligibleOffers.includes(x.attributes.offerid ?? '')
-            )
-
-            let readToEarn = 0
+            const response = await this.bot.http.request<AppDashboardData>(request)
+            const readToEarn = findReadToEarn(response.data).remaining
             let checkIn = 0
 
-            for (const item of eligibleActivities) {
-                const attrs = item.attributes
-
-                if (attrs.type === 'msnreadearn') {
-                    const pointMax = parseInt(attrs.pointmax ?? '0')
-                    const pointProgress = parseInt(attrs.pointprogress ?? '0')
-                    readToEarn = Math.max(0, pointMax - pointProgress)
-                } else if (attrs.type === 'checkin') {
-                    const progress = parseInt(attrs.progress ?? '0')
-                    const checkInDay = progress % 7
-                    const lastUpdated = new Date(attrs.last_updated ?? '')
-                    const today = new Date()
-
-                    if (checkInDay < 6 && today.getDate() !== lastUpdated.getDate()) {
-                        checkIn = parseInt(attrs[`day_${checkInDay + 1}_points`] ?? '0')
-                    }
-                }
+            const countersResponse = await this.bot.http.request<{
+                response?: { counters?: Record<string, string> }
+            }>({
+                url: URLs.platform.counters(BING_APP_CHANNEL),
+                method: 'GET',
+                headers: buildAppHeaders(this.bot)
+            })
+            const counters = countersResponse.data?.response?.counters ?? {}
+            const now = new Date()
+            const dateKey = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+            const appDateKey = this.bot.dailySetDate ? this.bot.dailySetDate.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3$1$2') : ''
+            const todayCounter = (appDateKey && counters[`DailyCheckIn_Sapphire${appDateKey}`])
+                ? counters[`DailyCheckIn_Sapphire${appDateKey}`]
+                : counters[`DailyCheckIn_Sapphire${dateKey}`]
+            if (!todayCounter) {
+                const latestName = Object.keys(counters)
+                    .filter(name => name.startsWith('DailyCheckIn_Sapphire'))
+                    .sort()
+                    .reverse()[0]
+                const latestParts = latestName ? counters[latestName]?.split(';') ?? [] : []
+                const previousStep = parseInt(latestParts[latestParts.length - 1] ?? '0') || 0
+                const schedule = [5, 5, 10, 10, 15, 15, 50]
+                checkIn = schedule[previousStep % schedule.length] ?? 0
             }
 
             const totalEarnablePoints = readToEarn + checkIn
@@ -190,6 +188,15 @@ export default class BrowserFunc {
             )
             throw error
         }
+    }
+
+    async getAppCounters(): Promise<Record<string, string>> {
+        const response = await this.bot.http.request<{ response?: { counters?: Record<string, string> } }>({
+            url: URLs.platform.counters(BING_APP_CHANNEL),
+            method: 'GET',
+            headers: buildAppHeaders(this.bot)
+        })
+        return response.data?.response?.counters ?? {}
     }
 
     async getCurrentPoints(): Promise<number> {
@@ -585,7 +592,8 @@ export default class BrowserFunc {
         }
     }
 
-    private updateCookieCache(liveCookies: Cookie[], source: string): boolean {
+    private updateCookieCache(rawLiveCookies: Cookie[], source: string): boolean {
+        const liveCookies = sanitizeCookies(rawLiveCookies, this.bot.isMobile)
         const cachedCookies = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
         const cookieState = (cookie: Cookie) =>
             JSON.stringify({
@@ -869,6 +877,21 @@ export default class BrowserFunc {
         return availablePages.length ? this.bot.browser.react.snapshotPage(availablePages) : null
     }
 
+    async getKeepEarningOfferIds(): Promise<string[] | null> {
+        const html = await this.fetchRewardsHtml(URLs.rewards.earn, '/earn')
+        return html === null ? null : earnKeepEarningIds(html)
+    }
+
+    async getEdgeWebProgress(): Promise<{ earned: number; max: number; complete: boolean } | null> {
+        const html = await this.fetchRewardsHtml(URLs.rewards.earn, '/earn')
+        if (!html) return null
+        let text = ''
+        for (const match of html.matchAll(/self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)/g)) {
+            try { text += JSON.parse(`"${match[1]}"`) } catch { return null }
+        }
+        return edgeWebProgress(text || html)
+    }
+
     private async fetchRewardsHtml(url: string, route: string): Promise<string | null> {
         try {
             const headers = { ...(this.bot.fingerprint?.headers ?? {}) }
@@ -900,7 +923,18 @@ export default class BrowserFunc {
     }
 
     async ensureOffer(offerId: string): Promise<ParsedOffer | null> {
-        const cached = this.bot.reactSnapshot?.offers.find(o => o.offerId === offerId)
+        const matchOffer = (offers: ParsedOffer[]) => {
+            let found = offers.find(o => o.offerId === offerId)
+            if (found) return found
+            const childMatch = offerId.match(/_Child(\d+)$/i)
+            if (childMatch) {
+                found = offers.find(o => o.offerId.endsWith(`_Child${childMatch[1]}`))
+                if (found) return found
+            }
+            return null
+        }
+
+        const cached = matchOffer(this.bot.reactSnapshot?.offers ?? [])
         if (cached) return cached
 
         this.bot.logger.debug(
@@ -916,7 +950,7 @@ export default class BrowserFunc {
             this.bot.reactSnapshot = refreshed
         }
 
-        const live = refreshed.offers.find(o => o.offerId === offerId) ?? null
+        const live = matchOffer(refreshed.offers)
 
         this.bot.logger.debug(
             this.bot.isMobile,

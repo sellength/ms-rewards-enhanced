@@ -110,7 +110,7 @@ export class Logger {
             consoleOut(level, consoleStr, getColorFn(logColor))
         }
 
-        if (!webhookAllowed || level === 'debug') return
+        if (!webhookAllowed || level === 'debug' || config.webhook?.enabled === false) return
 
         const hasWebhook = Boolean(
             (config.webhook.discord?.enabled && config.webhook.discord.url) ||

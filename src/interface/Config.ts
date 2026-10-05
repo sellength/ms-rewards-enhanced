@@ -10,6 +10,7 @@ export interface Config {
     accountDelay: ConfigDelay
     workers: ConfigWorkers
     activities: ConfigActivities
+    display: ConfigDisplay
     searchOnBingLocalQueries: boolean
     globalTimeout: number | string
     searchSettings: ConfigSearchSettings
@@ -18,6 +19,10 @@ export interface Config {
     proxy: ConfigProxy
     consoleLogFilter: LogFilter
     webhook: ConfigWebhook
+}
+
+export interface ConfigDisplay {
+    timeZone: string
 }
 
 export type QueryEngine = 'google' | 'wikipedia' | 'wikirandom' | 'hackernews' | 'reddit' | 'local'
@@ -76,6 +81,7 @@ export interface ConfigActivities {
 }
 
 export interface ConfigWebhook {
+    enabled?: boolean
     discord?: WebhookDiscordConfig
     ntfy?: WebhookNtfyConfig
     telegram?: WebhookTelegramConfig

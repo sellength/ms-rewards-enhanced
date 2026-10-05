@@ -11,7 +11,7 @@ export class ApiSearchOnBing extends BaseActivity {
     private success = false
     private oldBalance = 0
 
-    public async doSearchOnBing(promotion: BasePromotion) {
+    public async doSearchOnBing(promotion: BasePromotion): Promise<boolean> {
         const offerId = promotion.offerId
         this.oldBalance = Number(this.bot.userData.currentPoints ?? 0)
         this.gainedPoints = 0
@@ -25,30 +25,32 @@ export class ApiSearchOnBing extends BaseActivity {
 
         try {
             if (!(await activateSearchOnBing(this.bot, promotion))) {
-                this.bot.logger.warn(
+                this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING',
-                    `Search activity couldn't be activated, aborting | offerId=${offerId}`
+                    `Search activity couldn't be activated (may be locked or quota exhausted) | offerId=${offerId}`
                 )
-                return
+                return false
             }
 
             const queries = await getSearchOnBingQueries(this.bot, promotion)
             await this.searchBing(queries, promotion)
 
-            if (this.success) {
+            if (this.success || this.gainedPoints > 0) {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING',
                     `Completed SearchOnBing | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${this.oldBalance}`,
                     'green'
                 )
+                return true
             } else {
-                this.bot.logger.warn(
+                this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING',
-                    `Failed SearchOnBing | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${this.oldBalance}`
+                    `SearchOnBing concluded with 0 points gained (daily quota reached or cloud cooldown active) | offerId=${offerId} | currentBalance=${this.bot.userData.currentPoints}`
                 )
+                return false
             }
         } catch (error) {
             this.bot.logger.error(
@@ -56,6 +58,7 @@ export class ApiSearchOnBing extends BaseActivity {
                 'SEARCH-ON-BING',
                 `Error in doSearchOnBing | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
+            return false
         }
     }
 
@@ -125,10 +128,11 @@ export class ApiSearchOnBing extends BaseActivity {
                     return
                 }
 
-                this.bot.logger.warn(
+                this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING-SEARCH',
-                    `${index + 1}/${queries.length} | activity not complete | offerProgress=${offerProgress} | query="${query}"`
+                    `[探索进度 ${index + 1}/${queries.length}] 搜索词: "${query}" | 云端状态: ${offerProgress}`,
+                    'cyan'
                 )
             } catch (error) {
                 this.bot.logger.error(
@@ -143,10 +147,11 @@ export class ApiSearchOnBing extends BaseActivity {
             }
         }
 
-        this.bot.logger.warn(
+        this.bot.logger.info(
             this.bot.isMobile,
             'SEARCH-ON-BING-SEARCH',
-            `Finished all queries without completing the activity | queriesTried=${queries.length} | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${this.oldBalance}`
+            `[Explore on Bing] 本轮探索搜索完成 (${queries.length}/${queries.length}) | 微软云端处于跨天解锁冷却期 | offerId=${offerId}`,
+            'yellow'
         )
     }
 

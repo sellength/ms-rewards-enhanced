@@ -59,6 +59,24 @@ interface ActivationTarget extends ParsedOffer {
 
 export class EdgeBrowsing extends BaseActivity {
     public async run(data: DashboardData, signal?: AbortSignal): Promise<void> {
+        const webStreak = this.findStreak()
+        const webStreakComplete = Boolean(
+            webStreak?.isCurrentDayCompleted ||
+                (webStreak &&
+                    webStreak.activitiesTotal > 0 &&
+                    webStreak.activitiesCompleted >= webStreak.activitiesTotal)
+        )
+        if (webStreakComplete) {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                LOG_TAG,
+                `[PLAN] edgeBrowsing skip_complete progress=${webStreak?.activitiesCompleted ?? 0}/${
+                    webStreak?.activitiesTotal ?? 0
+                }`
+            )
+            return
+        }
+
         const accessToken = this.bot.accessToken
         if (!accessToken) {
             this.bot.logger.warn(this.bot.isMobile, LOG_TAG, 'Skipping: mobile app access token is unavailable')
@@ -91,13 +109,33 @@ export class EdgeBrowsing extends BaseActivity {
             const settings = this.resolveSettings(profile)
             if (!settings) return
 
-            const complete = settings.promotion.attributes['complete']?.toLowerCase() === 'true'
-            if (complete) {
-                this.bot.logger.info(this.bot.isMobile, LOG_TAG, 'Browsing Streak on Edge is already complete')
+            const liveWeb = await this.bot.browser.func.getEdgeWebProgress().catch(() => null)
+            const currentEarnedMinutes = Math.min(
+                TARGET_DURATION_MINUTES,
+                Math.max(0, liveWeb?.earned ?? webStreak?.activitiesCompleted ?? 0)
+            )
+            const isWebDone = Boolean(liveWeb?.complete || currentEarnedMinutes >= TARGET_DURATION_MINUTES)
+            if (isWebDone) {
+                this.bot.logger.info(this.bot.isMobile, LOG_TAG, `Edge browsing already complete (${currentEarnedMinutes}/${TARGET_DURATION_MINUTES}); no further reports needed`)
+                await this.verifyWebCompletion()
                 return
             }
 
-            const reportCount = Math.ceil(TARGET_DURATION_MINUTES / settings.reportIntervalMinutes)
+            const complete = settings.promotion.attributes['complete']?.toLowerCase() === 'true'
+            if (complete && !liveWeb) {
+                this.bot.logger.info(this.bot.isMobile, LOG_TAG, 'EdgeHub indicates complete and no web progress available')
+                await this.verifyWebCompletion()
+                return
+            }
+
+            const remainingMinutes = Math.max(0, TARGET_DURATION_MINUTES - currentEarnedMinutes)
+            const reportCount = remainingMinutes > 0 && currentEarnedMinutes > 0
+                ? Math.min(
+                    Math.ceil(TARGET_DURATION_MINUTES / settings.reportIntervalMinutes),
+                    Math.ceil(remainingMinutes / settings.reportIntervalMinutes) + 1
+                )
+                : Math.ceil(TARGET_DURATION_MINUTES / settings.reportIntervalMinutes)
+
             const intervalMs = settings.reportIntervalMinutes * 60_000
             const reportDelays = Array.from(
                 { length: reportCount },
@@ -118,7 +156,7 @@ export class EdgeBrowsing extends BaseActivity {
                 this.bot.isMobile,
                 LOG_TAG,
                 `Started background Edge browsing activity | offerId=${settings.offerId} | type=${settings.activityType}` +
-                    ` | targetMinutes=${TARGET_DURATION_MINUTES} | reports=${reportCount}` +
+                    ` | targetMinutes=${TARGET_DURATION_MINUTES} | currentEarnedMinutes=${currentEarnedMinutes} | reports=${reportCount}` +
                     ` | serverIntervalMinutes=${settings.reportIntervalMinutes}` +
                     ` | jitterSeconds=${REPORT_JITTER_MIN_MS / 1000}-${REPORT_JITTER_MAX_MS / 1000}` +
                     ` | estimatedDurationMinutes=${progress.estimatedDurationMinutes}`
@@ -139,18 +177,31 @@ export class EdgeBrowsing extends BaseActivity {
                 }
 
                 let result: ReportResult | null = null
-                try {
-                    result = await this.submitReport(accessToken, settings)
-                } catch (error) {
-                    const requestError = error as { status?: number; response?: { status?: number } }
-                    const status = requestError.response?.status ?? requestError.status ?? null
-                    this.bot.logger.warn(
-                        this.bot.isMobile,
-                        LOG_TAG,
-                        `Edge browsing report failed | report=${reportNumber}/${reportCount}` +
-                            ` | status=${status ?? 'unknown'}` +
-                            ` | message=${error instanceof Error ? error.message : String(error)}`
-                    )
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        result = await this.submitReport(accessToken, settings)
+                        break
+                    } catch (error) {
+                        const requestError = error as { status?: number; response?: { status?: number } }
+                        const status = requestError.response?.status ?? requestError.status ?? null
+                        if (attempt < 3 && !signal?.aborted) {
+                            this.bot.logger.warn(
+                                this.bot.isMobile,
+                                LOG_TAG,
+                                `Edge browsing report attempt ${attempt} failed, retrying in 3s | report=${reportNumber}/${reportCount}` +
+                                    ` | message=${error instanceof Error ? error.message : String(error)}`
+                            )
+                            await this.wait(3000, signal)
+                        } else {
+                            this.bot.logger.warn(
+                                this.bot.isMobile,
+                                LOG_TAG,
+                                `Edge browsing report failed | report=${reportNumber}/${reportCount}` +
+                                    ` | status=${status ?? 'unknown'}` +
+                                    ` | message=${error instanceof Error ? error.message : String(error)}`
+                            )
+                        }
+                    }
                 }
 
                 if (signal?.aborted) return
@@ -202,19 +253,20 @@ export class EdgeBrowsing extends BaseActivity {
                 serverComplete = await this.refreshServerCompletion(accessToken, reportsProcessed, reportCount)
             }
 
+            const webComplete = await this.verifyWebCompletion()
             const finished = progress.snapshot(reportsProcessed)
             const summary =
                 `Finished background Edge browsing activity | reports=${reportsProcessed}` +
                 ` | reportsCompleted=${reportsProcessed}/${reportCount}` +
                 ` | reportsRemaining=${serverComplete ? 0 : finished.reportsRemaining}` +
                 ` | scheduledMinutesCovered=${finished.scheduledMinutesCovered}/${TARGET_DURATION_MINUTES}` +
-                ` | serverComplete=${serverComplete}` +
+                    ` | serverComplete=${webComplete === true} | edgeHubComplete=${serverComplete}` +
                 ` | accepted=${acceptedReports} | duplicates=${duplicateReports} | failed=${failedReports}` +
                 ` | elapsedMinutes=${finished.elapsedMinutes} | estimatedRemainingMinutes=${
                     serverComplete ? 0 : finished.estimatedRemainingMinutes
                 }`
 
-            if (!serverComplete || duplicateReports > 0 || failedReports > 0) {
+            if (webComplete !== true || duplicateReports > 0 || failedReports > 0) {
                 this.bot.logger.warn(this.bot.isMobile, LOG_TAG, summary)
             } else {
                 this.bot.logger.info(this.bot.isMobile, LOG_TAG, summary, 'green')
@@ -266,10 +318,24 @@ export class EdgeBrowsing extends BaseActivity {
         return response.data
     }
 
+    private async verifyWebCompletion(): Promise<boolean | null> {
+        try {
+            const web = await this.bot.browser.func.getEdgeWebProgress()
+            this.bot.logger.info(this.bot.isMobile, LOG_TAG,
+                `Edge reporting ended; official Web verification | webProgress=${web ? `${web.earned}/${web.max}` : 'unavailable'}` +
+                ` | verification=${web?.complete ? 'complete' : 'pending'} | source=rewards-web`)
+            return web?.complete ?? null
+        } catch {
+            this.bot.logger.info(this.bot.isMobile, LOG_TAG,
+                'Edge reporting ended; official Web verification | webProgress=unavailable | verification=pending | source=rewards-web')
+            return null
+        }
+    }
+
     private findStreak(streaks?: StreakState[]): StreakState | undefined {
         if (streaks) return streaks.find(streak => this.isEdgeBrowsingPartner(streak.partner))
 
-        const snapshots = [this.bot.reactSnapshot, this.bot.reactSnapshots.desktop, this.bot.reactSnapshots.mobile]
+        const snapshots = [this.bot.reactSnapshots.desktop, ...(!this.bot.isMobile ? [this.bot.reactSnapshot] : [])]
 
         for (const snapshot of snapshots) {
             const streak = snapshot?.streaks.find(item => this.isEdgeBrowsingPartner(item.partner))
@@ -599,6 +665,11 @@ export class EdgeBrowsing extends BaseActivity {
         reportCount: number
     ): Promise<boolean> {
         try {
+            const web = await this.bot.browser.func.getEdgeWebProgress().catch(() => null)
+            if (web?.complete || (web && web.earned >= TARGET_DURATION_MINUTES)) {
+                return true
+            }
+
             const profile = await this.getEdgeProfile(accessToken)
             const promotion = this.findPromotion(profile)
             if (!promotion) {
@@ -611,6 +682,9 @@ export class EdgeBrowsing extends BaseActivity {
             }
 
             const complete = promotion.attributes['complete']?.toLowerCase() === 'true'
+            if (complete && web && !web.complete) {
+                return false
+            }
             this.bot.logger.debug(
                 this.bot.isMobile,
                 LOG_TAG,
@@ -638,7 +712,7 @@ export class EdgeBrowsing extends BaseActivity {
         this.bot.logger.info(
             this.bot.isMobile,
             LOG_TAG,
-            `Microsoft reports Edge browsing activity complete | report=${reportNumber}/${reportCount}` +
+            `EdgeHub reports completion; stopping further reports pending Web verification | report=${reportNumber}/${reportCount}` +
                 ` | accepted=${acceptedReports} | duplicates=${duplicateReports} | failed=${failedReports}`,
             'green'
         )

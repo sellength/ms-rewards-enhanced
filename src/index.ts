@@ -18,19 +18,25 @@ import { closeSessionStore, loadResolvedRegion, saveResolvedRegion } from './uti
 import { checkNodeVersion } from './util/Validator'
 import { normalizeCountry, resolveAccountLocale } from './util/Locale'
 import type { AccountLocale } from './util/Locale'
+import { resolveOfficialDailySetDate } from './util/DailySetCycle'
+import { runIsolatedTask } from './util/TaskIsolation'
+import { sanitizeCookies } from './util/SessionSanitizer'
+import { selectPcKeepEarningPromotions } from '../promotion-classification.cjs'
+import { evaluateBotChallengePolicy, BOT_WARNING_KEY } from './util/HitlBotChallenge'
 
 import { Login } from './browser/auth/Login'
 import Activities from './functions/Activities'
 import { SearchManager } from './functions/activities/search/SearchManager'
+import { resolveAppDailySetDate } from './functions/activities/app/AppState'
 
 import type { Account } from './interface/Account'
 import HttpClient from './util/Http'
 import { sendDiscord, flushDiscordQueue } from './logging/Discord'
 import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
 import { sendTelegram, flushTelegramQueue } from './logging/Telegram'
-import type { DashboardData } from './interface/DashboardData'
+import type { BasePromotion, DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
-import type { AppEarnablePoints } from './interface/Points'
+import type { AppEarnablePoints, BrowserEarnablePoints } from './interface/Points'
 
 interface ExecutionContext {
     isMobile: boolean
@@ -104,8 +110,10 @@ export class MicrosoftRewardsBot {
         desktop: null
     }
     public searchTopicsCache: { key: string; topics: Promise<string[]> } | null = null
+    public dailySetDate: string | null = null
 
     public accessToken = ''
+    public browserEarnable: BrowserEarnablePoints | null = null
     public cookies: { mobile: Cookie[]; desktop: Cookie[] }
     private fingerprintMobile?: BrowserFingerprintWithHeaders
     private fingerprintDesktop?: BrowserFingerprintWithHeaders
@@ -232,6 +240,24 @@ export class MicrosoftRewardsBot {
 
     async initialize(): Promise<void> {
         this.accounts = loadAccounts()
+        const targetEmail = process.env.REWARDS_ACTIVE_PROFILE_EMAIL?.trim().toLowerCase()
+        if (targetEmail) {
+            const filtered = this.accounts.filter(a => a.email.toLowerCase() === targetEmail)
+            if (filtered.length > 0) {
+                this.accounts = filtered
+            } else {
+                const targetRegion = process.env.REWARDS_ACTIVE_PROFILE_REGION || 'auto'
+                this.accounts = [{
+                    email: process.env.REWARDS_ACTIVE_PROFILE_EMAIL ? process.env.REWARDS_ACTIVE_PROFILE_EMAIL.trim() : targetEmail,
+                    password: '',
+                    recoveryEmail: '',
+                    geoLocale: targetRegion,
+                    langCode: 'en',
+                    proxy: { proxyHttp: false, url: '', port: 0, username: '', password: '' },
+                    saveFingerprint: { mobile: true, desktop: true }
+                }]
+            }
+        }
         this.warnExperimental()
     }
 
@@ -252,7 +278,7 @@ export class MicrosoftRewardsBot {
             )
         }
 
-        if (exp.edgeBrowsing) {
+        if (exp.edgeBrowsing && process.env.REWARDS_MODE !== 'mobile') {
             this.logger.warn(
                 'main',
                 'EXPERIMENTAL',
@@ -309,6 +335,7 @@ export class MicrosoftRewardsBot {
                 const log = msg.__ipcLog
                 if (log && typeof log.content === 'string') {
                     const { webhook } = this.config
+                    if (webhook.enabled === false) return
                     const { content, level } = log
 
                     if (webhook.discord?.enabled && webhook.discord.url) {
@@ -560,6 +587,14 @@ export class MicrosoftRewardsBot {
 
     async createDesktopSession(account: Account): Promise<BrowserSession> {
         const session = await this.browserFactory.createBrowser(account)
+        if (this.cookies.mobile && this.cookies.mobile.length > 0) {
+            try {
+                const cleanCookies = sanitizeCookies(this.cookies.mobile, false)
+                if (cleanCookies.length > 0) {
+                    await session.context.addCookies(cleanCookies)
+                }
+            } catch {}
+        }
         this.mainDesktopPage = await session.context.newPage()
         this.fingerprintDesktop = session.fingerprint
 
@@ -573,6 +608,7 @@ export class MicrosoftRewardsBot {
     }
 
     async Main(account: Account): Promise<AccountRunResult> {
+        const originalWorkers = { ...this.config.workers }
         const accountEmail = account.email
         this.logger.info('main', 'FLOW', `Starting session for ${accountEmail}`)
 
@@ -583,15 +619,28 @@ export class MicrosoftRewardsBot {
         this.reactSnapshot = null
         this.reactSnapshots = { mobile: null, desktop: null }
         this.searchTopicsCache = null
+        this.dailySetDate = null
 
         const apiSearch = this.config.experimental.apiSearch
         const apiSearchOnBing = this.config.experimental.apiSearchOnBing
         const fullApi = apiSearch && (apiSearchOnBing || !this.config.activities.searchOnBing)
+        const desktopMode = process.env.REWARDS_MODE === 'desktop'
+        const mobileMode = process.env.REWARDS_MODE === 'mobile'
+        const sharedMode = process.env.REWARDS_MODE === 'shared'
+        const loginMode = process.env.REWARDS_MODE === 'login'
+        const allowDesktopTasks = !mobileMode && !loginMode
+        const allowMobileTasks = !desktopMode && !loginMode && !sharedMode
         const needsAppActivities =
-            this.config.workers.doDailyCheckIn ||
-            this.config.workers.doAppPromotions ||
-            this.config.workers.doReadToEarn
-        const needsAppAccessToken = this.config.experimental.edgeBrowsing || needsAppActivities
+            allowMobileTasks &&
+            (this.config.workers.doDailyCheckIn ||
+                this.config.workers.doAppPromotions ||
+                this.config.workers.doReadToEarn)
+        const needsAppState =
+            loginMode ||
+            needsAppActivities ||
+            (allowMobileTasks && this.config.workers.doMobileSearch) ||
+            (mobileMode && this.config.workers.doDailySet)
+        const needsAppAccessToken = (allowDesktopTasks && this.config.experimental.edgeBrowsing) || needsAppState
 
         let mobileSession: BrowserSession | null = null
         let desktopSession: BrowserSession | null = null
@@ -621,6 +670,43 @@ export class MicrosoftRewardsBot {
             })
         }
 
+        const ensureDesktopSession = async (): Promise<void> => {
+            if (desktopSession) return
+            await executionContext.run({ isMobile: false, account }, async () => {
+                desktopSession = await this.createDesktopSession(account)
+            })
+        }
+
+        const runDesktopTask = async <T>(task: () => Promise<T>): Promise<T> => {
+            await ensureDesktopSession()
+            return await executionContext.run({ isMobile: false, account }, task)
+        }
+
+        const runIsolatedActivity = async (
+            isMobile: boolean,
+            context: string,
+            task: () => Promise<void>
+        ): Promise<void> => {
+            await runIsolatedTask(task, error => {
+                this.logger.error(
+                    isMobile,
+                    context,
+                    `Task failed; continuing with the next independent activity | message=${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                )
+            })
+        }
+
+        const runMobileActivity = async (context: string, task: () => Promise<void>): Promise<void> => {
+            await runIsolatedActivity(true, context, task)
+        }
+
+        const runDesktopActivity = async (context: string, task: () => Promise<void>): Promise<void> => {
+            await ensureDesktopSession()
+            await runIsolatedActivity(false, context, () => executionContext.run({ isMobile: false, account }, task))
+        }
+
         try {
             return await executionContext.run({ isMobile: true, account }, async () => {
                 mobileSession = await this.browserFactory.createBrowser(account)
@@ -648,7 +734,7 @@ export class MicrosoftRewardsBot {
                 this.cookies.mobile = await initialContext.cookies()
                 this.fingerprintMobile = mobileSession.fingerprint
 
-                if (fullApi) {
+                if (fullApi && !(mobileMode && this.config.workers.doDailySet)) {
                     await closeMobileSession()
                     this.logger.info(
                         'main',
@@ -658,20 +744,26 @@ export class MicrosoftRewardsBot {
                 }
 
                 const data: DashboardData = await this.browser.func.getDashboardData()
-                const hasBotScoreWarning =
-                    Array.isArray(data.dashboard.userWarnings) &&
-                    data.dashboard.userWarnings.some(warning => warning?.name === 'Fraud_UserWarning_BotScore_UX')
-
-                if (hasBotScoreWarning) {
+                const dailySetMap = data.dashboard.dailySetPromotions ?? {}
+                const allDailyOffers = Object.values(dailySetMap).flat()
+                const candidateOfferIds = (this.reactSnapshot?.offers ?? []).length > 0
+                    ? (this.reactSnapshot?.offers ?? []).map(offer => offer.offerId)
+                    : allDailyOffers.map(o => o.offerId)
+                this.dailySetDate = resolveOfficialDailySetDate(
+                    Object.keys(dailySetMap),
+                    candidateOfferIds,
+                    process.env.REWARDS_DAILY_SET_DATE
+                )
+                const botChallengePolicy = evaluateBotChallengePolicy(data.dashboard, this.config)
+                if (botChallengePolicy.hasBotWarning) {
                     const availablePoints = data.dashboard.userStatus.availablePoints ?? 0
 
-                    if (!this.config.contintueOnBotWarning) {
+                    if (botChallengePolicy.shouldSkipAccount) {
                         this.logger.warn(
                             'main',
                             'BOT-WARNING',
-                            `Microsoft Rewards reported Fraud_UserWarning_BotScore_UX for ${accountEmail}. ` +
-                                'This account will be skipped for safety. The preferred action is to stop automation for this account and wait a few days. ' +
-                                'To continue anyway (not recommended), set "contintueOnBotWarning": true.'
+                            `Microsoft Rewards reported ${BOT_WARNING_KEY} for ${accountEmail}. ` +
+                                'This account will be skipped for safety as configured.'
                         )
 
                         return {
@@ -681,12 +773,24 @@ export class MicrosoftRewardsBot {
                         }
                     }
 
-                    this.logger.warn(
-                        'main',
-                        'BOT-WARNING',
-                        `Microsoft Rewards reported Fraud_UserWarning_BotScore_UX for ${accountEmail}, but contintueOnBotWarning=true. ` +
-                            'Continuing as configured is not recommended; waiting a few days is the preferred action.'
-                    )
+                    if (botChallengePolicy.action === 'hitl_safe_fallback') {
+                        this.logger.warn(
+                            'main',
+                            'HITL-BOT-CHALLENGE',
+                            `[HITL-BOT-CHALLENGE] 🛡️ 微软官方已下发人机质询标记 (${BOT_WARNING_KEY})。系统已启动 HITL 安全避险模式：自动跳过每日任务(问答/答题)，专职安全执行日常搜索与轻量打卡任务。`
+                        )
+                        this.config.workers = {
+                            ...this.config.workers,
+                            ...botChallengePolicy.modifiedWorkers
+                        }
+                    } else if (botChallengePolicy.action === 'continue_unsafe') {
+                        this.logger.warn(
+                            'main',
+                            'BOT-WARNING',
+                            `Microsoft Rewards reported ${BOT_WARNING_KEY} for ${accountEmail}, but contintueOnBotWarning=true. ` +
+                                'Continuing as configured is not recommended; waiting a few days is the preferred action.'
+                        )
+                    }
                 }
 
                 const profileCountry = normalizeCountry(data.dashboard.userProfile.attributes.country)
@@ -714,7 +818,7 @@ export class MicrosoftRewardsBot {
 
                 let appData: AppDashboardData | null = null
 
-                if (this.accessToken && needsAppActivities) {
+                if (this.accessToken && needsAppState) {
                     try {
                         appData = await this.browser.func.getAppDashboardData()
                     } catch (error) {
@@ -727,11 +831,208 @@ export class MicrosoftRewardsBot {
                     }
                 }
 
-                this.userData.initialPoints = data.dashboard.userStatus.availablePoints
-                this.userData.currentPoints = data.dashboard.userStatus.availablePoints
+                if (mobileMode) {
+                    const appDailySetDate = appData ? resolveAppDailySetDate(appData) : null
+                    const preflightDate = process.env.REWARDS_DAILY_SET_DATE
+                    this.dailySetDate = preflightDate && preflightDate !== appDailySetDate ? null : appDailySetDate
+                }
+                if (this.dailySetDate) {
+                    this.logger.info(
+                        'main',
+                        'DAILY-SET-CYCLE',
+                        `${mobileMode ? 'SAAndroid' : 'Rewards Web'} Daily Set cycle resolved | date=${this.dailySetDate}`,
+                        'green'
+                    )
+                } else {
+                    this.logger.warn(
+                        'main',
+                        'DAILY-SET-CYCLE',
+                        `${mobileMode ? 'SAAndroid market time' : 'Official Dashboard'} Daily Set cycle unavailable; Daily Set will be skipped for safety`
+                    )
+                }
+
+                const sourceBalance =
+                    mobileMode && appData
+                        ? Number(appData.response.balance ?? 0)
+                        : data.dashboard.userStatus.availablePoints
+                this.userData.initialPoints = sourceBalance
+                this.userData.currentPoints = sourceBalance
                 const initialPoints = this.userData.initialPoints ?? 0
 
+                if (loginMode) {
+                    await executionContext.run({ isMobile: false, account }, async () => {
+                        desktopSession = await this.createDesktopSession(account)
+                    })
+                    await closeDesktopSession()
+                    this.logger.info(
+                        'main',
+                        'LOGIN-READY',
+                        `PC Web and SAAndroid authorization verified | account=${accountEmail}`,
+                        'green'
+                    )
+                    return { initialPoints, collectedPoints: 0 }
+                }
+
+                const counters = data.dashboard.userStatus.counters
+                const pcEarned = (counters.pcSearch || []).reduce((acc: number, c) => acc + (c.pointProgress || 0), 0)
+                const pcMax = (counters.pcSearch || []).reduce((acc: number, c) => acc + (c.pointProgressMax || 0), 0)
+                const mbEarned = (counters.mobileSearch || []).reduce(
+                    (acc: number, c) => acc + (c.pointProgress || 0),
+                    0
+                )
+                const mbMax = (counters.mobileSearch || []).reduce(
+                    (acc: number, c) => acc + (c.pointProgressMax || 0),
+                    0
+                )
+                const offersEarned = (counters.activityAndQuiz || []).reduce(
+                    (acc: number, c) => acc + (c.pointProgress || 0),
+                    0
+                )
+                const officialDailyPoint = (counters.dailyPoint || []).reduce(
+                    (acc: number, c) => acc + (c.pointProgress || 0),
+                    0
+                )
+                const totalTodayOfficial =
+                    officialDailyPoint > 0 ? officialDailyPoint : pcEarned + mbEarned + offersEarned
+
+                const lifetimePoints = data.dashboard.userStatus.lifetimePoints || 0
+                const availablePoints = data.dashboard.userStatus.availablePoints || 0
+
+                const todayStr = this.dailySetDate
+                const dailySetItems = todayStr ? (dailySetMap[todayStr] ?? []) : []
+                const dsEarned = dailySetItems.reduce(
+                    (acc: number, item) => acc + (item.complete ? item.pointProgressMax : item.pointProgress || 0),
+                    0
+                )
+                const dsMax = dailySetItems.reduce((acc: number, item) => acc + (item.pointProgressMax || 0), 0)
+
+                const promoItems = [
+                    ...(data.dashboard.morePromotions ?? []),
+                    ...(data.dashboard.morePromotionsWithoutPromotionalItems ?? [])
+                ]
+                const uniquePromos = selectPcKeepEarningPromotions(promoItems, dailySetItems,
+                    await this.browser.func.getKeepEarningOfferIds())
+                const promoEarned = uniquePromos.reduce(
+                    (acc: number, item) => acc + (item.complete ? item.pointProgressMax : item.pointProgress || 0),
+                    0
+                )
+                const promoMax = uniquePromos.reduce((acc: number, item) => acc + (item.pointProgressMax || 0), 0)
+                const terminalDailyEarned = pcEarned + dsEarned + promoEarned
+                const terminalDailyMax = pcMax + dsMax + promoMax
+                const officialDailyMax = totalTodayOfficial + Math.max(0, terminalDailyMax - terminalDailyEarned)
+
+                const totalDailyTasksEarned = pcEarned + mbEarned + dsEarned + promoEarned + 35
+                const estimatedShopPoints = Math.max(0, availablePoints - totalDailyTasksEarned)
+
+                const levelInfo = data.dashboard.userStatus.levelInfo
+                const levelName =
+                    levelInfo?.activeLevelName ||
+                    (levelInfo?.activeLevel
+                        ? String(levelInfo.activeLevel).includes('2')
+                            ? 'Level 2'
+                            : 'Level 1'
+                        : 'Level 1')
+                const levelProgress = levelInfo?.progress || 0
+                const levelProgressMax = levelInfo?.progressMax || 500
+
+                if (!mobileMode) {
+                    this.logger.info(
+                        false,
+                        'POINTS-BREAKDOWN',
+                        JSON.stringify({
+                            date: todayStr,
+                            account: accountEmail,
+                            available: availablePoints,
+                            lifetime: lifetimePoints,
+                            dailyEarned: totalTodayOfficial,
+                            dailyMax: officialDailyMax,
+                            officialAccountTodayEarned: totalTodayOfficial,
+                            pcDailyEarned: terminalDailyEarned,
+                            pcDailyMax: terminalDailyMax,
+                            offers: offersEarned,
+                            pcSearch: `${pcEarned}/${pcMax}`,
+                            mobileSearch: `${mbEarned}/${mbMax}`,
+                            dailySet: `${dsEarned}/${dsMax}`,
+                            promotions: `${promoEarned}/${promoMax}`,
+                            shopPoints: estimatedShopPoints,
+                            level: levelName,
+                            levelProgress: `${levelProgress}/${levelProgressMax}`
+                        })
+                    )
+                }
+
+                const pendingDailySet = dailySetItems.filter(
+                    item =>
+                        !item.complete &&
+                        ((item.pointProgressMax || 0) > (item.pointProgress || 0) || !item.pointProgressMax)
+                )
+                const pendingPromos = uniquePromos.filter(
+                    item =>
+                        !item.complete &&
+                        ((item.pointProgressMax || 0) > (item.pointProgress || 0) || !item.pointProgressMax)
+                )
+
+                const parseIconUrl = (item: BasePromotion) => {
+                    const attributes = (item.attributes ?? {}) as Record<string, string | undefined>
+                    const raw =
+                        attributes.image ||
+                        attributes.icon ||
+                        attributes.small_image ||
+                        attributes.modern_image ||
+                        item.imageUrl ||
+                        item.smallImageUrl ||
+                        item.iconUrl ||
+                        attributes.bg_image ||
+                        ''
+                    if (!raw || typeof raw !== 'string') return ''
+                    if (raw.startsWith('//')) return 'https:' + raw
+                    if (raw.startsWith('/')) return 'https://www.bing.com' + raw
+                    return raw
+                }
+
+                const dailySetCards = dailySetItems.map(item => ({
+                    offerId: item.offerId,
+                    title: item.title || item.name || '日常任务',
+                    description: item.description || '',
+                    points: Math.max(0, Number(item.pointProgressMax) || 0),
+                    progress: Math.max(0, Number(item.pointProgress) || 0),
+                    complete: Boolean(
+                        item.complete || (item.pointProgressMax && item.pointProgress >= item.pointProgressMax)
+                    ),
+                    iconUrl: parseIconUrl(item),
+                    destinationUrl: item.destinationUrl || ''
+                }))
+
+                const promoCards = uniquePromos.map(item => ({
+                    offerId: item.offerId,
+                    title: item.title || item.name || '活动推广',
+                    description: item.description || '',
+                    points: Math.max(0, Number(item.pointProgressMax) || 0),
+                    progress: Math.max(0, Number(item.pointProgress) || 0),
+                    complete: Boolean(
+                        item.complete || (item.pointProgressMax && item.pointProgress >= item.pointProgressMax)
+                    ),
+                    iconUrl: parseIconUrl(item),
+                    destinationUrl: item.destinationUrl || ''
+                }))
+
+                if (!mobileMode) {
+                    this.logger.info(
+                        false,
+                        'TASK-DISCOVERY',
+                        JSON.stringify({
+                            dailySetTotal: dailySetItems.length,
+                            dailySetPending: pendingDailySet.length,
+                            promoTotal: uniquePromos.length,
+                            promoPending: pendingPromos.length,
+                            dailySetCards,
+                            promoCards
+                        })
+                    )
+                }
+
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints(data)
+                this.browserEarnable = browserEarnable
                 let appEarnable: AppEarnablePoints | null = null
 
                 if (this.accessToken && needsAppActivities) {
@@ -759,19 +1060,21 @@ export class MicrosoftRewardsBot {
                 )
 
                 const parallel = this.config.searchSettings.parallelSearching
-                const doBonus = this.config.workers.doBonusSearches
-                const doVisualSearch = this.config.workers.doVisualSearch
+                const doBonus = allowMobileTasks && this.config.workers.doBonusSearches
+                const doVisualSearch = allowDesktopTasks && this.config.workers.doVisualSearch
 
                 let mobilePoints = 0
                 let desktopPoints = 0
                 let bonusPoints = 0
 
-                if (this.config.experimental.edgeBrowsing) {
-                    edgeBrowsingTask = this.activities
-                        .doEdgeBrowsing(data, edgeBrowsingController.signal)
+                if (allowDesktopTasks && this.config.experimental.edgeBrowsing) {
+                    edgeBrowsingTask = executionContext
+                        .run({ isMobile: false, account }, async () =>
+                            this.activities.doEdgeBrowsing(data, edgeBrowsingController.signal)
+                        )
                         .catch(error => {
                             this.logger.error(
-                                this.isMobile,
+                                false,
                                 'EDGE-BROWSING',
                                 `Unexpected background task failure | message=${
                                     error instanceof Error ? error.message : String(error)
@@ -784,16 +1087,21 @@ export class MicrosoftRewardsBot {
                 }
 
                 if (fullApi) {
-                    if (this.config.ensureStreakProtection) {
-                        await this.activities.doEnsureStreakProtection()
+                    if (allowDesktopTasks && this.config.ensureStreakProtection) {
+                        await runDesktopActivity('STREAK-PROTECTION', () => this.activities.doEnsureStreakProtection())
                     }
-                    if (this.config.workers.doPunchCards) await this.activities.doPunchCardsMobile(data)
-                    if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
+                    if (allowDesktopTasks && this.config.workers.doActivateSearchPerk)
+                        await runDesktopActivity('ACTIVATE-SEARCH-PERK', () =>
+                            this.activities.doActivateSearchPerk(data)
+                        )
 
-                    const plan = await this.searchManager.getSearchPoints()
-                    const doMobileSearch = plan.doMobile
-                    const doDesktopSearch = plan.doDesktop
-                    const desktopBrowserNeeded = this.config.workers.doPunchCards || doVisualSearch
+                    const plan = desktopMode
+                        ? await runDesktopTask(() => this.searchManager.getSearchPoints(appData ?? undefined))
+                        : await this.searchManager.getSearchPoints(appData ?? undefined)
+                    const doMobileSearch = allowMobileTasks && plan.doMobile
+                    const doDesktopSearch = allowDesktopTasks && plan.doDesktop
+                    const desktopBrowserNeeded =
+                        (allowDesktopTasks && this.config.workers.doPunchCards) || doVisualSearch
 
                     if (doDesktopSearch && !desktopBrowserNeeded) {
                         this.cookies.desktop = [...this.cookies.mobile]
@@ -802,53 +1110,123 @@ export class MicrosoftRewardsBot {
 
                     if (desktopBrowserNeeded) {
                         await executionContext.run({ isMobile: false, account }, async () => {
-                            desktopSession = await this.createDesktopSession(account)
-                            if (this.config.workers.doPunchCards) await this.activities.doPunchCardsDesktop()
-                            if (doVisualSearch) await this.activities.doVisualSearch(data)
+                            await ensureDesktopSession()
+                            if (allowDesktopTasks && this.config.workers.doPunchCards)
+                                await runIsolatedActivity(false, 'PUNCH-CARDS', () =>
+                                    this.activities.doPunchCardsDesktop()
+                                )
+                            if (doVisualSearch)
+                                await runIsolatedActivity(false, 'VISUAL-SEARCH', async () => {
+                                    await this.activities.doVisualSearch(data)
+                                })
                         })
-                        await closeDesktopSession()
                     }
 
-                    if (this.config.workers.doDailySet) await this.activities.doDailySet(data)
-                    if (this.config.workers.doMorePromotions) await this.activities.doMorePromotions(data)
-                    if (appAvailable && this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
-                    if (appAvailable && this.config.workers.doAppPromotions && appData)
-                        await this.activities.doAppPromotions(appData)
-                    if (appAvailable && this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
+                    if (this.config.workers.doDailySet) {
+                        if (mobileMode) {
+                            if (appData)
+                                await runMobileActivity('MOBILE-DAILY-SET', () =>
+                                    this.activities.doMobileDailySet(appData)
+                                )
+                            else
+                                this.logger.warn(
+                                    true,
+                                    'MOBILE-DAILY-SET',
+                                    '[PLAN] dailySet skip_state_unavailable source=SAAndroid'
+                                )
+                        } else if (allowDesktopTasks) {
+                            await runDesktopActivity('DAILY-SET', () => this.activities.doDailySet(data))
+                        }
+                    } else if (botChallengePolicy?.hasBotWarning) {
+                        this.logger.warn(
+                            'main',
+                            'DAILY-SET',
+                            `[PLAN] dailySet skip_risk_guard: Microsoft reported ${BOT_WARNING_KEY}, skipped automatically to protect account.`
+                        )
+                    }
+                    if (allowDesktopTasks && this.config.workers.doMorePromotions)
+                        await runDesktopActivity('MORE-PROMOTIONS', () => this.activities.doMorePromotions(data))
+                    if (allowMobileTasks && appAvailable && this.config.workers.doDailyCheckIn)
+                        await runMobileActivity('DAILY-CHECK-IN', () => this.activities.doDailyCheckIn())
+                    if (allowMobileTasks && appAvailable && this.config.workers.doAppPromotions && appData)
+                        await runMobileActivity('APP-PROMOTIONS', () => this.activities.doAppPromotions(appData))
+                    if (allowMobileTasks && appAvailable && this.config.workers.doReadToEarn)
+                        await runMobileActivity('READ-TO-EARN', () => this.activities.doReadToEarn())
 
                     if (doMobileSearch) mobilePoints = await this.searchManager.searchMobile(account)
                     if (doBonus) bonusPoints = await this.searchManager.bonusMobile(account)
                     if (doDesktopSearch) desktopPoints = await this.searchManager.searchDesktop(account)
                 } else {
-                    if (this.config.ensureStreakProtection) {
-                        await this.activities.doEnsureStreakProtection()
+                    if (allowDesktopTasks && this.config.ensureStreakProtection) {
+                        await runDesktopActivity('STREAK-PROTECTION', () => this.activities.doEnsureStreakProtection())
                     }
-                    if (this.config.workers.doDailySet) await this.activities.doDailySet(data)
-                    if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
-                    if (this.config.workers.doMorePromotions) await this.activities.doMorePromotions(data)
-                    if (appAvailable && this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
-                    if (appAvailable && this.config.workers.doAppPromotions && appData)
-                        await this.activities.doAppPromotions(appData)
-                    if (appAvailable && this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
-                    if (this.config.workers.doPunchCards) await this.activities.doPunchCardsMobile(data)
+                    if (this.config.workers.doDailySet) {
+                        if (mobileMode) {
+                            if (appData)
+                                await runMobileActivity('MOBILE-DAILY-SET', () =>
+                                    this.activities.doMobileDailySet(appData)
+                                )
+                            else
+                                this.logger.warn(
+                                    true,
+                                    'MOBILE-DAILY-SET',
+                                    '[PLAN] dailySet skip_state_unavailable source=SAAndroid'
+                                )
+                        } else if (allowDesktopTasks) {
+                            await runDesktopActivity('DAILY-SET', () => this.activities.doDailySet(data))
+                        }
+                    } else if (botChallengePolicy?.hasBotWarning) {
+                        this.logger.warn(
+                            'main',
+                            'DAILY-SET',
+                            `[PLAN] dailySet skip_risk_guard: Microsoft reported ${BOT_WARNING_KEY}, skipped automatically to protect account.`
+                        )
+                    }
+                    if (allowDesktopTasks && this.config.workers.doActivateSearchPerk)
+                        await runDesktopActivity('ACTIVATE-SEARCH-PERK', () =>
+                            this.activities.doActivateSearchPerk(data)
+                        )
+                    if (allowDesktopTasks && this.config.workers.doMorePromotions)
+                        await runDesktopActivity('MORE-PROMOTIONS', () => this.activities.doMorePromotions(data))
+                    if (allowMobileTasks && appAvailable && this.config.workers.doDailyCheckIn)
+                        await runMobileActivity('DAILY-CHECK-IN', () => this.activities.doDailyCheckIn())
+                    if (allowMobileTasks && appAvailable && this.config.workers.doAppPromotions && appData)
+                        await runMobileActivity('APP-PROMOTIONS', () => this.activities.doAppPromotions(appData))
+                    if (allowMobileTasks && appAvailable && this.config.workers.doReadToEarn)
+                        await runMobileActivity('READ-TO-EARN', () => this.activities.doReadToEarn())
+                    const plan = desktopMode
+                        ? await runDesktopTask(() => this.searchManager.getSearchPoints(appData ?? undefined))
+                        : await this.searchManager.getSearchPoints(appData ?? undefined)
+                    const doMobileSearch = allowMobileTasks && plan.doMobile
+                    const doDesktopSearch = allowDesktopTasks && plan.doDesktop
 
-                    const plan = await this.searchManager.getSearchPoints()
-                    const doMobileSearch = plan.doMobile
-                    const doDesktopSearch = plan.doDesktop
+                    const hasPendingPunchCards =
+                        Array.isArray(data.dashboard.punchCards) &&
+                        data.dashboard.punchCards.some(
+                            p => !p.parentPromotion?.complete && (p.parentPromotion?.pointProgressMax || 0) > 0
+                        )
 
                     const desktopBrowserNeeded =
-                        this.config.workers.doPunchCards || doVisualSearch || (doDesktopSearch && !apiSearch)
+                        (allowDesktopTasks && this.config.workers.doPunchCards && hasPendingPunchCards) ||
+                        doVisualSearch ||
+                        (doDesktopSearch && !apiSearch)
 
                     if (apiSearch && doDesktopSearch && !desktopBrowserNeeded) {
-                        this.cookies.desktop = [...this.cookies.mobile]
+                        this.cookies.desktop = sanitizeCookies(this.cookies.mobile, false)
                         this.fingerprintDesktop = await this.browserFactory.generateFingerprint(false)
                     }
 
                     if (parallel && !apiSearch && doMobileSearch && doDesktopSearch) {
                         await executionContext.run({ isMobile: false, account }, async () => {
-                            desktopSession = await this.createDesktopSession(account)
-                            if (this.config.workers.doPunchCards) await this.activities.doPunchCardsDesktop()
-                            if (doVisualSearch) await this.activities.doVisualSearch(data)
+                            await ensureDesktopSession()
+                            if (allowDesktopTasks && this.config.workers.doPunchCards)
+                                await runIsolatedActivity(false, 'PUNCH-CARDS', () =>
+                                    this.activities.doPunchCardsDesktop()
+                                )
+                            if (doVisualSearch)
+                                await runIsolatedActivity(false, 'VISUAL-SEARCH', async () => {
+                                    await this.activities.doVisualSearch(data)
+                                })
                         })
 
                         const mobileWork = async (): Promise<[number, number]> => {
@@ -861,11 +1239,7 @@ export class MicrosoftRewardsBot {
                             }
                         }
                         const desktopWork = async (): Promise<number> => {
-                            try {
-                                return await this.searchManager.searchDesktop(account)
-                            } finally {
-                                await closeDesktopSession()
-                            }
+                            return this.searchManager.searchDesktop(account)
                         }
 
                         ;[[mobilePoints, bonusPoints], desktopPoints] = await Promise.all([mobileWork(), desktopWork()])
@@ -879,15 +1253,20 @@ export class MicrosoftRewardsBot {
 
                         if (desktopBrowserNeeded) {
                             await executionContext.run({ isMobile: false, account }, async () => {
-                                desktopSession = await this.createDesktopSession(account)
+                                await ensureDesktopSession()
 
-                                if (this.config.workers.doPunchCards) await this.activities.doPunchCardsDesktop()
-                                if (doVisualSearch) await this.activities.doVisualSearch(data)
+                                if (allowDesktopTasks && this.config.workers.doPunchCards)
+                                    await runIsolatedActivity(false, 'PUNCH-CARDS', () =>
+                                        this.activities.doPunchCardsDesktop()
+                                    )
+                                if (doVisualSearch)
+                                    await runIsolatedActivity(false, 'VISUAL-SEARCH', async () => {
+                                        await this.activities.doVisualSearch(data)
+                                    })
                                 if (doDesktopSearch && !apiSearch) {
                                     desktopPoints = await this.searchManager.searchDesktop(account)
                                 }
                             })
-                            await closeDesktopSession()
                         }
 
                         if (doDesktopSearch && apiSearch) {
@@ -904,12 +1283,13 @@ export class MicrosoftRewardsBot {
                     }`
                 )
 
-                if (this.config.workers.doClaimBonusPoints) await this.activities.doClaimBonusPoints()
+                if (allowDesktopTasks && this.config.workers.doClaimBonusPoints)
+                    await runDesktopActivity('CLAIM-BONUS-POINTS', () => this.activities.doClaimBonusPoints())
 
                 if (edgeBrowsingTask) {
                     if (!edgeBrowsingFinished) {
                         this.logger.info(
-                            this.isMobile,
+                            false,
                             'EDGE-BROWSING',
                             'Foreground activities finished; waiting for the background Edge browsing activity'
                         )
@@ -918,7 +1298,12 @@ export class MicrosoftRewardsBot {
                     edgeBrowsingTask = null
                 }
 
-                const finalPoints = await this.browser.func.getCurrentPoints()
+                const finalPoints = mobileMode
+                    ? Number(
+                          (await this.browser.func.getAppDashboardData()).response.balance ??
+                              this.userData.currentPoints
+                      )
+                    : await runDesktopTask(() => this.browser.func.getCurrentPoints())
                 const collectedPoints = finalPoints - initialPoints
 
                 this.logger.info(
@@ -927,12 +1312,36 @@ export class MicrosoftRewardsBot {
                     `Points collected | pointsGained=${collectedPoints} | currentBalance=${finalPoints} | account=${accountEmail}`
                 )
 
+                if (!mobileMode) {
+                    this.logger.info(
+                        false,
+                        'POINTS-BREAKDOWN',
+                        JSON.stringify({
+                            date: todayStr,
+                            account: accountEmail,
+                            available: finalPoints,
+                            lifetime: lifetimePoints,
+                            dailyEarned: totalTodayOfficial + Math.max(0, collectedPoints),
+                            dailyMax: officialDailyMax,
+                            officialAccountTodayEarned: totalTodayOfficial + Math.max(0, collectedPoints),
+                            pcDailyEarned: Math.min(
+                                terminalDailyMax,
+                                terminalDailyEarned + Math.max(0, collectedPoints)
+                            ),
+                            pcDailyMax: terminalDailyMax,
+                            pointsGained: collectedPoints,
+                            pointsSchemaVersion: 2
+                        })
+                    )
+                }
+
                 return {
                     initialPoints,
                     collectedPoints: collectedPoints || 0
                 }
             })
         } finally {
+            this.config.workers = originalWorkers
             if (edgeBrowsingTask) {
                 edgeBrowsingController.abort()
                 await edgeBrowsingTask

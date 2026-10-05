@@ -7,7 +7,9 @@ import { PunchCards } from './activities/rewards/PunchCards'
 import { DailyCheckIn } from './activities/app/DailyCheckIn'
 import { ReadToEarn } from './activities/app/ReadToEarn'
 import { AppReward } from './activities/app/AppReward'
+import { submitAppActivity } from './activities/app/AppActivity'
 import { AppPromotions } from './activities/app/AppPromotions'
+import { MobileDailySet } from './activities/app/MobileDailySet'
 
 import { UrlReward } from './activities/api/UrlReward'
 import { ClaimBonusPoints } from './activities/api/ClaimBonusPoints'
@@ -49,16 +51,19 @@ export default class Activities {
         return await new BrowserSearch(this.bot).doBonusSearches(page)
     }
 
-    doSearchOnBing = async (promotion: BasePromotion, page: Page): Promise<void> => {
+    doSearchOnBing = async (promotion: BasePromotion, page: Page): Promise<boolean> => {
         if (this.bot.config.experimental.apiSearchOnBing) {
-            await new ApiSearchOnBing(this.bot).doSearchOnBing(promotion)
-            return
+            return await new ApiSearchOnBing(this.bot).doSearchOnBing(promotion)
         }
-        await new BrowserSearchOnBing(this.bot).doSearchOnBing(promotion, page)
+        return await new BrowserSearchOnBing(this.bot).doSearchOnBing(promotion, page)
     }
 
     doDailySet = async (data: DashboardData): Promise<void> => {
         await new DailySet(this.bot).run(data)
+    }
+
+    doMobileDailySet = async (data: AppDashboardData): Promise<void> => {
+        await new MobileDailySet(this.bot).run(data)
     }
 
     doMorePromotions = async (data: DashboardData): Promise<void> => {
@@ -73,9 +78,9 @@ export default class Activities {
         await new PunchCards(this.bot).runDesktop()
     }
 
-    doUrlReward = async (promotion: BasePromotion): Promise<void> => {
+    doUrlReward = async (promotion: BasePromotion): Promise<boolean> => {
         const urlReward = new UrlReward(this.bot)
-        await urlReward.doUrlReward(promotion)
+        return await urlReward.doUrlReward(promotion)
     }
 
     doClaimBonusPoints = async (): Promise<void> => {
@@ -106,6 +111,10 @@ export default class Activities {
     doAppReward = async (promotion: Promotion): Promise<void> => {
         const urlReward = new AppReward(this.bot)
         await urlReward.doAppReward(promotion)
+    }
+
+    doAppActivity = async (promotion: Promotion, data: AppDashboardData): Promise<{ status: number; balance?: number }> => {
+        return await submitAppActivity(this.bot, promotion, data)
     }
 
     doReadToEarn = async (): Promise<void> => {

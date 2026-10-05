@@ -423,7 +423,7 @@ export class VisualSearch extends BaseActivity {
             if (res.balance != null) this.bot.userData.currentPoints = res.balance
 
             const gained = res.gained ?? 0
-            if (gained >= 5) {
+            if (gained > 0) {
                 this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gained
                 this.bot.logger.info(
                     this.bot.isMobile,

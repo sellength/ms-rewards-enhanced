@@ -32,28 +32,12 @@ export class PromotionActivityRunner extends BaseActivity {
             `Processing activity | title="${promotion.title}" | offerId=${offerId} | type=${type}`
         )
 
-        if (type !== 'urlreward') {
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'ACTIVITY',
-                `Skipped activity "${promotion.title}" | offerId=${offerId} | reason=unsupported type "${
-                    promotion.promotionType
-                }"`
-            )
-            return
-        }
-
-        const isSearchOnBing = name.includes('exploreonbing')
-        if (isSearchOnBing && !this.bot.config.activities.searchOnBing) {
-            this.logDisabled('SearchOnBing', offerId)
-            return
-        }
-        if (!isSearchOnBing && !this.bot.config.activities.urlReward) {
-            this.logDisabled('UrlReward', offerId)
-            return
-        }
-
+        const isSearchOnBing = name.includes('exploreonbing') || name.includes('searchonbing')
         if (isSearchOnBing) {
+            if (!this.bot.config.activities.searchOnBing) {
+                this.logDisabled('SearchOnBing', offerId)
+                return
+            }
             this.bot.logger.info(
                 this.bot.isMobile,
                 'ACTIVITY',
@@ -64,10 +48,15 @@ export class PromotionActivityRunner extends BaseActivity {
             return
         }
 
+        if (!this.bot.config.activities.urlReward) {
+            this.logDisabled('UrlReward', offerId)
+            return
+        }
+
         this.bot.logger.info(
             this.bot.isMobile,
             'ACTIVITY',
-            `Found activity type "UrlReward" | title="${promotion.title}" | offerId=${offerId}`
+            `Found activity type "${promotion.promotionType || 'UrlReward'}" | title="${promotion.title}" | offerId=${offerId}`
         )
         await this.bot.activities.doUrlReward(promotion)
     }

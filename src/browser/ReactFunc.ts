@@ -640,10 +640,10 @@ export default class ReactFunc {
     }
 
     // Quest pages (punchcards)
-    public snapshotQuestPage(html: string): QuestChild[] {
+    public snapshotQuestPage(html: string, knownChildOfferIds: readonly string[] = []): QuestChild[] {
         try {
             const combined = this.concatFlightChunks(html)
-            const children = this.parseQuestOffers(combined)
+            const children = this.parseQuestOffers(combined, knownChildOfferIds)
 
             this.bot.logger.info(
                 this.bot.isMobile,
@@ -662,13 +662,21 @@ export default class ReactFunc {
         }
     }
 
-    private parseQuestOffers(combined: string): QuestChild[] {
+    private parseQuestOffers(combined: string, knownChildOfferIds: readonly string[]): QuestChild[] {
         const out: QuestChild[] = []
         const seen = new Set<string>()
+        const knownChildren = new Set(knownChildOfferIds)
 
         for (const obj of this.extractObjects(combined, '"offerId"')) {
             const offerId = obj.offerId as string | undefined
-            if (!offerId || !offerId.includes('pcchild') || seen.has(offerId)) continue
+            const hasChildShape =
+                typeof obj.hash === 'string' &&
+                ('isCompleted' in obj || 'isLocked' in obj || 'isDisabled' in obj)
+            if (
+                !offerId ||
+                seen.has(offerId) ||
+                (!knownChildren.has(offerId) && !hasChildShape && !offerId.toLowerCase().includes('pcchild'))
+            ) continue
             seen.add(offerId)
 
             const hash = (obj.hash as string | null) ?? null
@@ -703,22 +711,22 @@ export default class ReactFunc {
         try {
             const combined = htmls.map(h => this.concatFlightChunks(h)).join('')
 
-            const anchors: { id: string; at: number }[] = []
+            const anchors: { id: string; at: number; structural: boolean }[] = []
             for (const match of combined.matchAll(/\/earn\/quest\/([A-Za-z0-9_]+)/g)) {
-                anchors.push({ id: match[1] as string, at: match.index ?? 0 })
+                anchors.push({ id: match[1] as string, at: match.index ?? 0, structural: true })
             }
             for (const match of combined.matchAll(/"id":"quest_([A-Za-z0-9_]+)"/g)) {
-                anchors.push({ id: match[1] as string, at: match.index ?? 0 })
+                anchors.push({ id: match[1] as string, at: match.index ?? 0, structural: true })
             }
             for (const match of combined.matchAll(/[A-Za-z0-9_]*pcparent[A-Za-z0-9_]*/gi)) {
-                anchors.push({ id: match[0] as string, at: match.index ?? 0 })
+                anchors.push({ id: match[0] as string, at: match.index ?? 0, structural: false })
             }
             anchors.sort((a, b) => a.at - b.at)
 
             const byId = new Map<string, ParentQuest>()
             for (let k = 0; k < anchors.length; k++) {
-                const { id, at } = anchors[k]!
-                if (!this.isParentQuestId(id)) continue
+                const { id, at, structural } = anchors[k]!
+                if (!structural && !this.isParentQuestId(id)) continue
 
                 const next = anchors[k + 1]?.at ?? combined.length
                 const region = combined.slice(at, Math.min(next, at + 3000))

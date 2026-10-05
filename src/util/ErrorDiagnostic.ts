@@ -7,6 +7,73 @@ interface UnknownPageDiagnosticOptions {
     platform: 'mobile' | 'desktop'
 }
 
+export function sanitizeDiagnosticContent(content: string): string {
+    if (!content || typeof content !== 'string') return ''
+
+    let sanitized = content
+
+    // 1. Password input values in HTML
+    sanitized = sanitized.replace(
+        /(<input[^>]*type=["']?password["']?[^>]*\bvalue=["'])([^"']*)(["'])/gi,
+        '$1[REDACTED]$3'
+    )
+    sanitized = sanitized.replace(
+        /(<input[^>]*\bvalue=["'])([^"']*)(["'][^>]*type=["']?password["']?)/gi,
+        '$1[REDACTED]$3'
+    )
+
+    // 2. Sensitive input fields by name
+    sanitized = sanitized.replace(
+        /(<input[^>]*name=["']?(?:passwd|password|pwd|totp|otp|code|secret)["']?[^>]*\bvalue=["'])([^"']*)(["'])/gi,
+        '$1[REDACTED]$3'
+    )
+    sanitized = sanitized.replace(
+        /(<input[^>]*\bvalue=["'])([^"']*)(["'][^>]*name=["']?(?:passwd|password|pwd|totp|otp|code|secret)["']?)/gi,
+        '$1[REDACTED]$3'
+    )
+
+    // 3. Textarea elements
+    sanitized = sanitized.replace(
+        /(<textarea[^>]*>)([\s\S]*?)(<\/textarea>)/gi,
+        '$1[REDACTED]$3'
+    )
+
+    // 4. Sensitive URL query parameters
+    sanitized = sanitized.replace(
+        /([?&](?:passwd|password|pwd|totp|otp|code|secret|client_secret|clientSecret|app_secret|access_token|accessToken|refresh_token|refreshToken|id_token|idToken|auth_token|authToken|token|apikey|api_key|apiKey)=)[^&\s"'<>]+/gi,
+        '$1[REDACTED]'
+    )
+
+    // 5. Authorization headers / Bearer tokens
+    sanitized = sanitized.replace(
+        /(Authorization:\s*Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi,
+        '$1[REDACTED]'
+    )
+    sanitized = sanitized.replace(
+        /(Bearer\s+)[A-Za-z0-9\-._~+/]{20,}/gi,
+        '$1[REDACTED]'
+    )
+
+    // 6. Sensitive cookies in headers or HTML
+    sanitized = sanitized.replace(
+        /((?:authToken|token|MSPCAuth|session|sessionid|passwd|password|access_token)=)[^;,\s"'<>]+/gi,
+        '$1[REDACTED]'
+    )
+
+    // 7. JSON sensitive properties (supports both camelCase and snake_case)
+    sanitized = sanitized.replace(
+        /(["'](?:password|passwd|pwd|totp|otp|code|secret|api_?key|api_?token|access_?token|refresh_?token|auth_?token|session_?id|client_?secret|apiKeyMasked)["']\s*:\s*["'])[^"']*?(["'])/gi,
+        '$1[REDACTED]$2'
+    )
+
+    return sanitized
+}
+
+async function ensureSecureDir(dirPath: string): Promise<void> {
+    await fs.mkdir(dirPath, { recursive: true, mode: 0o700 })
+    await fs.chmod(dirPath, 0o700).catch(() => {})
+}
+
 function safePathSegment(value: string, fallback: string): string {
     const sanitized = value
         .toLowerCase()
@@ -50,7 +117,7 @@ export async function errorDiagnostic(page: Page, error: Error): Promise<void> {
             return
         }
 
-        const errorLog = `
+        const rawErrorLog = `
 Name: ${error.name}
 Message: ${error.message}
 Timestamp: ${new Date().toISOString()}
@@ -59,18 +126,28 @@ Stack Trace:
 ${error.stack || 'No stack trace available'}
         `.trim()
 
-        const [htmlContent, screenshotBuffer] = await Promise.all([
+        const shouldCaptureScreenshot = process.env.MS_CAPTURE_DIAGNOSTIC_SCREENSHOT === 'true'
+
+        const [rawHtmlContent, screenshotBuffer] = await Promise.all([
             page.content(),
-            page.screenshot({ fullPage: true, type: 'png' })
+            shouldCaptureScreenshot ? page.screenshot({ fullPage: true, type: 'png' }).catch(() => null) : Promise.resolve(null)
         ])
 
-        await fs.mkdir(outputDir, { recursive: true })
+        const sanitizedHtml = sanitizeDiagnosticContent(rawHtmlContent)
+        const sanitizedErrorLog = sanitizeDiagnosticContent(rawErrorLog)
 
-        await Promise.all([
-            fs.writeFile(path.join(outputDir, 'dump.html'), htmlContent),
-            fs.writeFile(path.join(outputDir, 'screenshot.png'), screenshotBuffer),
-            fs.writeFile(path.join(outputDir, 'error.txt'), errorLog)
-        ])
+        await ensureSecureDir(outputDir)
+
+        const writes = [
+            fs.writeFile(path.join(outputDir, 'dump.html'), sanitizedHtml, { mode: 0o600 }),
+            fs.writeFile(path.join(outputDir, 'error.txt'), sanitizedErrorLog, { mode: 0o600 })
+        ]
+
+        if (shouldCaptureScreenshot && screenshotBuffer) {
+            writes.push(fs.writeFile(path.join(outputDir, 'screenshot.png'), screenshotBuffer, { mode: 0o600 }))
+        }
+
+        await Promise.all(writes)
 
         console.log(`Diagnostics saved to: ${outputDir}`)
     } catch (error) {
@@ -89,19 +166,21 @@ export async function unknownPageDiagnostic(
     const outputDir = unknownPageOutputDir(rawUrl, capturedAt, platform)
 
     try {
-        await fs.mkdir(outputDir, { recursive: true })
+        await ensureSecureDir(outputDir)
 
+        const shouldCaptureScreenshot = process.env.MS_CAPTURE_DIAGNOSTIC_SCREENSHOT === 'true'
         const [htmlResult, screenshotResult] = await Promise.allSettled([
             page.content(),
-            page.screenshot({ fullPage: true, type: 'png' })
+            shouldCaptureScreenshot ? page.screenshot({ fullPage: true, type: 'png' }) : Promise.resolve(null)
         ])
 
+        const sanitizedUrl = sanitizeDiagnosticContent(rawUrl)
         const metadata = {
-            url: rawUrl,
+            url: sanitizedUrl,
             capturedAt,
             platform,
             htmlCaptured: htmlResult.status === 'fulfilled',
-            screenshotCaptured: screenshotResult.status === 'fulfilled',
+            screenshotCaptured: screenshotResult.status === 'fulfilled' && Boolean(screenshotResult.value),
             errors: [
                 htmlResult.status === 'rejected'
                     ? `HTML: ${htmlResult.reason instanceof Error ? htmlResult.reason.message : String(htmlResult.reason)}`
@@ -109,18 +188,19 @@ export async function unknownPageDiagnostic(
                 screenshotResult.status === 'rejected'
                     ? `Screenshot: ${screenshotResult.reason instanceof Error ? screenshotResult.reason.message : String(screenshotResult.reason)}`
                     : null
-            ].filter((error): error is string => error !== null)
+            ].filter((error): error is string => error !== null).map(err => sanitizeDiagnosticContent(err))
         }
 
         const writes: Promise<void>[] = [
-            fs.writeFile(path.join(outputDir, 'metadata.json'), JSON.stringify(metadata, null, 2))
+            fs.writeFile(path.join(outputDir, 'metadata.json'), JSON.stringify(metadata, null, 2), { mode: 0o600 })
         ]
 
         if (htmlResult.status === 'fulfilled') {
-            writes.push(fs.writeFile(path.join(outputDir, 'page.html'), htmlResult.value))
+            const sanitizedHtml = sanitizeDiagnosticContent(htmlResult.value)
+            writes.push(fs.writeFile(path.join(outputDir, 'page.html'), sanitizedHtml, { mode: 0o600 }))
         }
-        if (screenshotResult.status === 'fulfilled') {
-            writes.push(fs.writeFile(path.join(outputDir, 'screenshot.png'), screenshotResult.value))
+        if (screenshotResult.status === 'fulfilled' && screenshotResult.value) {
+            writes.push(fs.writeFile(path.join(outputDir, 'screenshot.png'), screenshotResult.value, { mode: 0o600 }))
         }
 
         await Promise.all(writes)
@@ -131,3 +211,4 @@ export async function unknownPageDiagnostic(
         return null
     }
 }
+

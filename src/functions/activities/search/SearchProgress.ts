@@ -1,6 +1,8 @@
 import type { MicrosoftRewardsBot } from '../../../index'
 import type { Counters, DashboardImpression } from '../../../interface/DashboardData'
 import type { MissingSearchPoints } from '../../../interface/Points'
+import type { AppDashboardData } from '../../../interface/AppDashBoardData'
+import { findAppSearch } from '../app/AppState'
 
 export interface SearchQuota {
     earned: number
@@ -23,7 +25,21 @@ export class SearchProgress {
     }
 
     public async getMissing(isMobile: boolean): Promise<MissingSearchPoints> {
-        return this.calculateMissing(await this.getCounters(), isMobile)
+        if (isMobile) {
+            const quota = findAppSearch(await this.bot.browser.func.getAppDashboardData())
+            return {
+                mobilePoints: quota.remaining,
+                desktopPoints: 0,
+                edgePoints: 0,
+                totalPoints: quota.remaining
+            }
+        }
+        return this.calculateMissing(await this.getCounters(), false)
+    }
+
+    public async getMobileQuota(data?: AppDashboardData): Promise<SearchQuota> {
+        const progress = findAppSearch(data ?? (await this.bot.browser.func.getAppDashboardData()))
+        return { earned: progress.earned, max: progress.max, remaining: progress.remaining }
     }
 
     public calculateMissing(counters: Counters, isMobile: boolean): MissingSearchPoints {
@@ -47,8 +63,10 @@ export class SearchProgress {
             ? pcCounters.filter(counter => !this.isEdgeCounter(counter))
             : pcCounters
 
+        const mobileQuota = this.summarize(counters.mobileSearch ?? [])
+
         return {
-            mobile: this.summarize(counters.mobileSearch ?? []),
+            mobile: mobileQuota,
             desktop: this.summarize(desktopCounters),
             edge: this.summarize(explicitEdgeCounters)
         }

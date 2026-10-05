@@ -112,22 +112,42 @@ export class ActivateSearchPerk extends BaseActivity {
                 `Response | offerId=${perk.offerId} | status=${status} | acknowledged=${acknowledged}`
             )
 
-            if (acknowledged) {
+            if (!acknowledged) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'ACTIVATE-SEARCH-PERK',
+                    `Activation not acknowledged | offerId=${perk.offerId} | status=${status}`
+                )
+                return
+            }
+
+            await this.bot.utils.wait(1500)
+            const refreshed = await this.bot.browser.func.getDashboardData()
+            const currentPerk = detectSearchMultiplierPerk(refreshed.dashboard)
+            const liveAfter = currentPerk?.offerId === perk.offerId
+                ? await this.bot.browser.func.ensureOffer(perk.offerId)
+                : null
+            const verified =
+                !currentPerk ||
+                currentPerk.offerId !== perk.offerId ||
+                Boolean(liveAfter && (liveAfter.isCompleted || !liveAfter.reportable))
+
+            if (verified) {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'ACTIVATE-SEARCH-PERK',
-                    `Activated ${perk.multiplier}x search perk | offerId=${perk.offerId} | daily search cap is now boosted`,
+                    `Search perk activation verified by Microsoft | multiplier=${perk.multiplier}x | offerId=${perk.offerId}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'ACTIVATE-SEARCH-PERK',
-                    `Activation not acknowledged | offerId=${perk.offerId} | status=${status}`
+                    `Microsoft still reports the search perk as actionable after activation | offerId=${perk.offerId}`
                 )
             }
 
-            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
+            await this.bot.utils.wait(this.bot.utils.randomDelay(3500, 8500))
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,

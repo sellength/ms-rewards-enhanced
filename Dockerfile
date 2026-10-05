@@ -41,6 +41,7 @@ ENV NODE_ENV=production \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cron \
     gettext-base \
+    gosu \
     jq \
     tzdata \
     ca-certificates \
@@ -99,14 +100,24 @@ COPY config.example.json ./config.example.json
 # then symlinks it to the project root where the script expects it.
 # Accounts come from ACCOUNT_N_* env vars, so no accounts.json is needed.
 
-# Copy runtime scripts with proper permissions from the start
+# Copy runtime scripts and dependencies with proper permissions from the start
 COPY --chmod=755 scripts/docker/run_daily.sh ./scripts/docker/run_daily.sh
 COPY --chmod=755 scripts/docker/healthcheck.sh ./scripts/docker/healthcheck.sh
 COPY --chmod=755 scripts/api/ ./scripts/api/
+COPY --chmod=755 scripts/main/ ./scripts/main/
 COPY --chmod=644 scripts/env.js ./scripts/env.js
 COPY --chmod=644 scripts/package.json ./scripts/package.json
+COPY --chmod=755 web.mjs ./web.mjs
+COPY --chmod=644 promotion-classification.mjs ./promotion-classification.mjs
+COPY --chmod=644 promotion-classification.cjs ./promotion-classification.cjs
+COPY --chmod=755 doctor.mjs ./doctor.mjs
+COPY --chmod=755 mobile-doctor.mjs ./mobile-doctor.mjs
+COPY public/ ./public/
 COPY --chmod=644 src/crontab.template /etc/cron.d/microsoft-rewards-cron.template
 COPY --chmod=755 scripts/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# Ensure non-root node user owns application files
+RUN chown -R node:node /usr/src/microsoft-rewards-script
 
 # Entrypoint handles TZ, accounts/config generation, initial run toggle,
 # cron templating & launch, or API server startup when API_MODE=true

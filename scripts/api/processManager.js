@@ -251,6 +251,35 @@ export class ProcessManager extends EventEmitter {
             err.code = 'BAD_REQUEST'
             throw err
         }
+
+        // 安全审计整改：不得替换目标执行脚本，禁止传入任意 Node 注入参数
+        const DANGEROUS_NODE_FLAGS = [
+            '-e', '--eval', '-p', '--print', '-c', '--check',
+            '-r', '--require', '--import', '--loader', '--experimental-loader',
+            '--inspect', '--inspect-brk', '--inspect-port',
+            '--expose-internals', '--experimental-policy',
+            '--openssl-config', '--trace-event-categories'
+        ]
+
+        for (const arg of argsOverride) {
+            const trimmed = arg.trim()
+            const lower = trimmed.toLowerCase()
+            if (DANGEROUS_NODE_FLAGS.some(flag => lower === flag || lower.startsWith(`${flag}=`))) {
+                const err = new Error(`Forbidden argument in args: "${arg}". Arbitrary Node flags are not allowed.`)
+                err.code = 'BAD_REQUEST'
+                throw err
+            }
+        }
+
+        if (this.defaultArgs && this.defaultArgs.length > 0) {
+            const defaultScript = this.defaultArgs[0]
+            if (argsOverride.length === 0 || argsOverride[0] !== defaultScript) {
+                const err = new Error(`First argument must remain "${defaultScript}". Replacing the target script is forbidden.`)
+                err.code = 'BAD_REQUEST'
+                throw err
+            }
+        }
+
         return argsOverride
     }
 

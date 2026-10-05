@@ -1,7 +1,7 @@
 {
-    "name": "microsoft-rewards-script",
-    "version": "4.3.1",
-    "description": "Automatically do tasks for Microsoft Rewards but in TS!",
+    "name": "ms-rewards-enhanced",
+    "version": "0.1.0",
+    "description": "Microsoft Rewards Automation Enhanced Edition with Fluent Web UI & Adaptive Agent",
     "author": "Netsky",
     "license": "GPL-3.0-or-later",
     "engines": {
@@ -12,6 +12,7 @@
         "install:browser": "npx patchright install chromium",
         "build": "rimraf dist && tsc && node ./scripts/main/copyAssets.js",
         "start": "node ./dist/index.js",
+        "web": "node web.mjs",
         "ts-start": "ts-node ./src/index.ts",
         "dev": "ts-node ./src/index.ts -dev",
         "api": "node ./scripts/api/server.js",
@@ -20,6 +21,9 @@
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
         "test:log-parser": "node --test scripts/api/logParser.test.js",
+        "test:mobile-state": "node --test scripts/api/appState.test.js",
+        "test:task-status": "node --test scripts/api/taskStatus.test.js",
+        "test:daily-cycle": "node --test scripts/api/dailySetCycle.test.js",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "clear-diagnostics": "rimraf diagnostics",
@@ -61,5 +65,8 @@
         "semver": "^7.8.1",
         "ts-node": "^10.9.2",
         "zod": "^4.4.3"
+    },
+    "overrides": {
+        "adm-zip": ">=0.6.1"
     }
 }

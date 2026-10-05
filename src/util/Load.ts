@@ -107,8 +107,8 @@ function buildProxy(index: string): AccountProxy {
 
 function buildSaveFingerprint(index: string): ConfigSaveFingerprint {
     return {
-        mobile: envBool(`ACCOUNT_${index}_SAVE_FINGERPRINT_MOBILE`, false),
-        desktop: envBool(`ACCOUNT_${index}_SAVE_FINGERPRINT_DESKTOP`, false)
+        mobile: envBool(`ACCOUNT_${index}_SAVE_FINGERPRINT_MOBILE`, true),
+        desktop: envBool(`ACCOUNT_${index}_SAVE_FINGERPRINT_DESKTOP`, true)
     }
 }
 
@@ -171,6 +171,46 @@ export function loadConfig(): Config {
 
         const unverifiedConfig = JSON.parse(config)
         const configData = validateConfig(unverifiedConfig)
+
+        if (process.env.REWARDS_MODE === 'desktop') {
+            configData.workers.doDesktopSearch = true
+            configData.workers.doDailySet = true
+            configData.workers.doMorePromotions = true
+            configData.activities.searchOnBing = true
+            configData.workers.doMobileSearch = false
+            configData.workers.doReadToEarn = false
+            configData.workers.doDailyCheckIn = false
+            configData.workers.doAppPromotions = false
+        } else if (process.env.REWARDS_MODE === 'mobile') {
+            configData.workers.doMobileSearch = true
+            configData.workers.doReadToEarn = true
+            configData.workers.doDailyCheckIn = true
+            configData.workers.doAppPromotions = true
+            configData.activities.searchOnBing = true
+            configData.workers.doDesktopSearch = false
+            configData.workers.doDailySet = true
+            configData.workers.doMorePromotions = false
+            configData.workers.doPunchCards = false
+            configData.workers.doVisualSearch = false
+            configData.workers.doClaimBonusPoints = false
+        } else if (process.env.REWARDS_MODE === 'shared') {
+            configData.workers.doDailySet = true
+            configData.workers.doMorePromotions = true
+            configData.workers.doPunchCards = true
+            configData.activities.searchOnBing = true
+            configData.workers.doDesktopSearch = false
+            configData.workers.doMobileSearch = false
+            configData.workers.doReadToEarn = false
+            configData.workers.doDailyCheckIn = false
+            configData.workers.doAppPromotions = false
+            configData.experimental.edgeBrowsing = false
+        } else if (process.env.REWARDS_MODE === 'login') {
+            for (const worker of Object.keys(configData.workers) as Array<keyof typeof configData.workers>) {
+                configData.workers[worker] = false
+            }
+            configData.experimental.edgeBrowsing = false
+            configData.ensureStreakProtection = false
+        }
 
         configCache = configData
 

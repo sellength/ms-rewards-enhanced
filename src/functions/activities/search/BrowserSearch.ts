@@ -5,12 +5,14 @@ import { SearchQueryQueue } from '../../SearchQueryQueue'
 import { BaseActivity } from '../BaseActivity'
 import { BonusTracker } from './BonusTracker'
 import { SearchProgress } from './SearchProgress'
+import { findBingSearchInput } from './SearchPageAdapter'
 import type { SearchTracker } from '../../../interface/Search'
 import type { MissingSearchPoints } from '../../../interface/Points'
 import type { MicrosoftRewardsBot } from '../../../index'
 
 const REFRESH_EVERY = 10
-const MAX_QUERY_ATTEMPTS = 5
+const MAX_QUERY_ATTEMPTS = 3 // Initial attempt plus at most two page recoveries.
+const LANDING_DIAGNOSTIC_ATTEMPTS = 3
 
 const POINTS_MAX_SEARCHES = 100
 const POINTS_STAGNANT_LIMIT = 10
@@ -34,6 +36,15 @@ export class Search extends BaseActivity {
         const tracker = new PointsTracker(this.bot, isMobile)
         try {
             const stats = await this.runSearchSession(page, isMobile, tracker)
+
+            if (stats.stagnant >= tracker.stagnantLimit && !tracker.done()) {
+                this.bot.logger.error(
+                    isMobile,
+                    tracker.context,
+                    `Bing searches interrupted | reason=10_consecutive_zero_points | ${tracker.progress()} | pointsGained=${stats.totalGained}`
+                )
+                throw new Error(`搜索中断失败：连续 ${tracker.stagnantLimit} 次搜索未获得积分 (0分)，疑似触发微软15分钟风控冷却`)
+            }
 
             if (stats.performed >= tracker.maxSearches && !tracker.done()) {
                 this.bot.logger.warn(
@@ -73,6 +84,15 @@ export class Search extends BaseActivity {
                   ? `${tracker.stagnantLimit} idle searches`
                   : 'query pool exhausted'
 
+        if (stats.stagnant >= tracker.stagnantLimit && !done) {
+            this.bot.logger.error(
+                isMobile,
+                tracker.context,
+                `Bonus searches interrupted | reason=10_consecutive_zero_points | ${tracker.progress()}`
+            )
+            throw new Error(`Bonus搜索中断失败：连续 ${tracker.stagnantLimit} 次搜索未获得积分 (0分)`)
+        }
+
         this.bot.logger.info(
             isMobile,
             tracker.context,
@@ -102,9 +122,12 @@ export class Search extends BaseActivity {
             )
 
             await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-COOKIE-SEED', true)
+            await page.goto(URLs.rewards.earn, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+            await this.bot.utils.wait(1500)
             await page.goto(URLs.bing.origin)
             await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
             await this.bot.browser.utils.tryDismissAllMessages(page)
+            await this.ensureBingAuthenticated(page, isMobile)
 
             while (!tracker.done() && stats.performed < tracker.maxSearches && stats.stagnant < tracker.stagnantLimit) {
                 const query = await queryQueue.next()
@@ -138,6 +161,14 @@ export class Search extends BaseActivity {
                 }
             }
 
+            if (stats.stagnant >= tracker.stagnantLimit && !tracker.done()) {
+                this.bot.logger.error(
+                    isMobile,
+                    tracker.context,
+                    `搜索已中断：连续 ${tracker.stagnantLimit} 次搜索未获得积分 (0分)，疑似触发微软搜索冷却风控(15分钟)或单日限制 | ${tracker.progress()} | 已执行=${stats.performed}次`
+                )
+            }
+
             return stats
         } catch (error) {
             this.bot.logger.error(
@@ -148,30 +179,102 @@ export class Search extends BaseActivity {
             return stats
         }
     }
+
+    private async ensureBingAuthenticated(page: Page, isMobile: boolean): Promise<void> {
+        try {
+            if (typeof page.evaluate !== 'function') return
+            const status = await page.evaluate(() => {
+                const doc = typeof document !== 'undefined' ? document : null
+                if (!doc) return { isSignInVisible: false, hasUser: true }
+                const signInBtn = doc.querySelector('#id_s, .b_idProviders, a[href*="signin"]')
+                const isSignInVisible = signInBtn
+                    ? !signInBtn.classList.contains('b_hide') && Boolean(signInBtn.textContent?.match(/sign\s*in|登录/i))
+                    : false
+                const avatar = doc.querySelector('#id_a, .id_avatar, #id_rh, .sw_me, #id_n')
+                const hasUser = Boolean(avatar && (avatar.textContent?.trim().length || (avatar as HTMLElement).offsetWidth > 0))
+                return { isSignInVisible, hasUser }
+            }).catch(() => null)
+
+            if (status && (status.isSignInVisible || !status.hasUser)) {
+                this.bot.logger.info(isMobile, 'SEARCH-AUTH', 'Bing search session not authenticated; executing SSO handshake')
+                await page.goto(URLs.auth.bingSignIn, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+                await this.bot.utils.wait(2000)
+                await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-AUTH-SSO', true)
+                this.bot.logger.info(isMobile, 'SEARCH-AUTH', 'Bing SSO handshake completed')
+            }
+        } catch {
+            // Non-fatal session bootstrap catch
+        }
+    }
+
     private async bingSearch(page: Page, query: string, isMobile: boolean): Promise<void> {
         this.searchCount++
 
-        if (this.searchCount % REFRESH_EVERY === 0) {
+        if (!isMobile && this.searchCount % REFRESH_EVERY === 0) {
             await page.goto(URLs.bing.origin)
-            await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+            if (typeof page.waitForLoadState === 'function') {
+                await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+            }
             await this.bot.browser.utils.tryDismissAllMessages(page)
+            await this.ensureBingAuthenticated(page, isMobile)
         }
 
         for (let attempt = 1; attempt <= MAX_QUERY_ATTEMPTS; attempt++) {
+            let submissionAttempted = false
             try {
-                const searchBox = page.locator(SEARCH_BOX)
+                const before = await this.searchPageDiagnostic(page)
+                if (before.blocked) throw new Error(`search_manual_required:${before.kind}`)
+                if (isMobile) {
+                    // Keep the existing mobile session; a result page need not expose an input.
+                    const target = new URL('/search', URLs.bing.origin)
+                    target.searchParams.set('q', query)
+                    this.bot.logger.info(isMobile, 'SEARCH-BING', 'Submitting Bing search | strategy=mobile-navigation')
+                    submissionAttempted = true
+                    const response = await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 15000 })
+                    const landed = await this.confirmMobileSearchLanding(page)
+                    if (landed.blocked) throw new Error(`search_manual_required:${landed.kind}`)
+                    if (landed.kind !== 'bing-search' || (response && response.status() >= 400)) {
+                        throw new Error('search_navigation_unconfirmed')
+                    }
+                } else {
+                    await page.evaluate(() => window.scrollTo({ left: 0, top: 0, behavior: 'auto' })).catch(() => {})
+                    await page.keyboard.press('Home').catch(() => {})
+                    const entry = await findBingSearchInput(page)
+                    if (!entry) throw new Error('search_input_missing')
+                    const searchBox = entry.input
+                    this.bot.logger.info(isMobile, 'SEARCH-BING', `Search input ready | strategy=${entry.strategy}`)
 
-                await page.evaluate(() => window.scrollTo({ left: 0, top: 0, behavior: 'auto' }))
-                await page.keyboard.press('Home')
-                await searchBox.waitFor({ state: 'visible', timeout: 15000 })
+                    await this.bot.utils.wait(1000)
+                    await searchBox.fill('', { timeout: 5000 })
+                    await searchBox.focus({ timeout: 5000 })
 
-                await this.bot.utils.wait(1000)
-                await this.bot.browser.utils.ghostClick(page, SEARCH_BOX, { clickCount: 3 })
-                await searchBox.fill('')
+                    await page.keyboard.type(query, { delay: this.bot.utils.randomDelay(45, 90) })
+                    submissionAttempted = true
 
-                await page.keyboard.type(query, { delay: this.bot.utils.randomDelay(45, 90) })
-                await page.keyboard.press('Enter')
+                    // Check for autocomplete suggestions dropdown (li.sa_sg, [role="option"])
+                    await this.bot.utils.wait(500)
+                    const suggestion = page.locator('li.sa_sg, [role="option"]').first()
+                    const hasSuggestion = await suggestion.isVisible().catch(() => false)
+                    if (hasSuggestion) {
+                        this.bot.logger.info(isMobile, 'SEARCH-BING', 'Selecting autocomplete suggestion for authentic search token')
+                        await page.keyboard.press('ArrowDown').catch(() => {})
+                        await this.bot.utils.wait(100)
+                    }
+
+                    await page.keyboard.press('Enter')
+
+                    if (typeof page.waitForURL === 'function') {
+                        await page.waitForURL(url => url.pathname === '/search', { timeout: 8000 }).catch(() => {})
+                    }
+                    if (typeof page.waitForLoadState === 'function') {
+                        await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
+                    }
+                }
                 await this.bot.utils.wait(3000)
+                if (page.mouse?.wheel) {
+                    await page.mouse.wheel(0, Math.floor(Math.random() * 200) + 150).catch(() => {})
+                    await this.bot.utils.wait(1500)
+                }
 
                 if (this.bot.config.searchSettings.scrollRandomResults) {
                     await this.bot.utils.wait(2000)
@@ -191,14 +294,60 @@ export class Search extends BaseActivity {
 
                 return
             } catch (error) {
-                this.bot.logger.warn(
+                const diagnostic = await this.searchPageDiagnostic(page)
+                const missing = error instanceof Error && error.message === 'search_input_missing'
+                const report = missing && attempt < MAX_QUERY_ATTEMPTS ? 'info' : 'warn'
+                this.bot.logger[report](
                     isMobile,
                     'SEARCH-BING',
-                    `Search attempt ${attempt}/${MAX_QUERY_ATTEMPTS} failed | query="${query}" | ${error instanceof Error ? error.message : String(error)}`
+                    `${report === 'info' ? 'Search input absent; using homepage fallback' : `Search attempt ${attempt}/${MAX_QUERY_ATTEMPTS} failed`} | page=${diagnostic.kind} | searchBoxes=${diagnostic.count} | searchBoxVisible=${diagnostic.visible} | submissionAttempted=${submissionAttempted}`
                 )
-                if (attempt === MAX_QUERY_ATTEMPTS) throw error
+                if (error instanceof Error && error.message === 'search_input_ambiguous') {
+                    throw new Error('search_input_ambiguous; 多个可用搜索入口，停止猜测点击')
+                }
+                if (diagnostic.blocked || (error instanceof Error && error.message.startsWith('search_manual_required:'))) {
+                    throw new Error(`search_manual_required:${diagnostic.kind}; 请检查浏览器登录或验证页面`)
+                }
+                if (submissionAttempted) throw new Error('search_submission_uncertain; 已尝试提交，不自动重复搜索，请同步官方进度')
+                if (attempt === MAX_QUERY_ATTEMPTS) throw new Error('search_page_recovery_exhausted; 搜索框仍不可用，已停止有限恢复')
                 await this.bot.utils.wait(2000)
+                this.bot.logger.info(isMobile, 'SEARCH-BING', `Recovering Bing search page | recovery=${attempt}/2`)
+                await page.goto(URLs.bing.origin, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+                const recovered = await this.searchPageDiagnostic(page)
+                if (recovered.blocked) throw new Error(`search_manual_required:${recovered.kind}; 请检查浏览器登录或验证页面`)
+                await this.bot.browser.utils.tryDismissAllMessages(page)
             }
+        }
+    }
+
+    private async confirmMobileSearchLanding(page: Page): Promise<{ kind: string; count: number; visible: boolean; blocked: boolean }> {
+        let diagnostic = await this.searchPageDiagnostic(page)
+        for (let attempt = 1; attempt < LANDING_DIAGNOSTIC_ATTEMPTS; attempt++) {
+            if (!diagnostic.blocked && diagnostic.kind === 'bing-search') return diagnostic
+            if (diagnostic.kind === 'login' || diagnostic.kind === 'closed') return diagnostic
+            await this.bot.utils.wait(300)
+            diagnostic = await this.searchPageDiagnostic(page)
+        }
+        return diagnostic
+    }
+
+    private async searchPageDiagnostic(page: Page): Promise<{ kind: string; count: number; visible: boolean; blocked: boolean }> {
+        if (page.isClosed()) return { kind: 'closed', count: 0, visible: false, blocked: true }
+        let kind = 'other'
+        try {
+            const url = new URL(page.url())
+            if (['login.live.com', 'login.microsoftonline.com', 'account.live.com'].includes(url.hostname)) kind = 'login'
+            else if (url.hostname === 'bing.com' || url.hostname.endsWith('.bing.com')) {
+                kind = /captcha|challenge|turing/i.test(url.pathname) ? 'verification' : url.pathname === '/search' ? 'bing-search' : 'bing-other'
+            }
+        } catch { /* Do not log raw URLs. */ }
+        try {
+            if (await page.locator('iframe[src*="captcha"], #b_captcha, #captcha, input[name="cf-turnstile-response"]').first().isVisible()) kind = 'verification'
+            else if (await page.locator('input[type="password"], input[name="loginfmt"]').first().isVisible()) kind = 'login'
+            const box = page.locator(SEARCH_BOX)
+            return { kind, count: await box.count(), visible: await box.first().isVisible(), blocked: kind === 'login' || kind === 'verification' }
+        } catch {
+            return { kind: 'unavailable', count: 0, visible: false, blocked: true }
         }
     }
 

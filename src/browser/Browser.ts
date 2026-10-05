@@ -4,6 +4,7 @@ import { BrowserFingerprintWithHeaders, FingerprintGenerator } from 'fingerprint
 
 import type { MicrosoftRewardsBot } from '../index'
 import { loadSession, saveFingerprint } from '../util/SessionStore'
+import { sanitizeStorageState } from '../util/SessionSanitizer'
 import { fingerprintMatchesLocale } from '../util/Locale'
 import { formatBrowserProxyServer } from '../util/Proxy'
 import { UserAgentManager } from './UserAgent'
@@ -38,7 +39,6 @@ class Browser {
         '--disable-features=WebAuthentication,PasswordManagerOnboarding,PasswordManager,EnablePasswordsAccountStorage,Passkeys,WebAuthenticationProxy,U2F',
         '--disable-save-password-bubble',
         '--disable-dev-shm-usage',
-        '--disable-background-networking',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding'
     ] as const
@@ -70,6 +70,7 @@ class Browser {
             const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0
             const sandboxDisabled = process.platform === 'linux' && runningAsRoot
             const sandboxArgs = sandboxDisabled ? ['--no-sandbox', '--disable-setuid-sandbox'] : []
+            const chromiumSandbox = !sandboxDisabled
 
             const certArgs = ignoreCertificateErrors
                 ? ['--ignore-certificate-errors', '--ignore-certificate-errors-spki-list', '--ignore-ssl-errors']
@@ -83,16 +84,19 @@ class Browser {
                 )
             }
 
+            const offScreenArgs = !headless ? ['--window-position=-3000,-3000', '--window-size=1280,800'] : []
+
             this.bot.logger.info(
                 this.bot.isMobile,
                 'BROWSER',
-                `Launching bundled patched Chromium (Edge UA) | headless=${headless} | platform=${process.platform} | proxy=${hasProxy ? 'yes' : 'no'} | tls=${ignoreCertificateErrors ? 'verification-disabled' : 'verified'} | sandbox=${sandboxDisabled ? 'disabled-root' : 'enabled'}`
+                `Launching bundled patched Chromium (Edge UA) | headless=${headless} | offscreen=${!headless ? 'yes' : 'no'} | platform=${process.platform} | proxy=${hasProxy ? 'yes' : 'no'} | tls=${ignoreCertificateErrors ? 'verification-disabled' : 'verified'} | sandbox=${sandboxDisabled ? 'disabled-root' : 'enabled'}`
             )
 
             browser = await rebrowser.chromium.launch({
                 headless,
+                chromiumSandbox,
                 ...(proxyConfig && { proxy: proxyConfig }),
-                args: [...Browser.BROWSER_ARGS, ...sandboxArgs, ...certArgs]
+                args: [...Browser.BROWSER_ARGS, ...sandboxArgs, ...certArgs, ...offScreenArgs]
             })
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error)
@@ -103,12 +107,17 @@ class Browser {
         try {
             const session = loadSession(this.bot.config.sessionPath, account.email, this.bot.isMobile)
 
-            if (session?.storageState) {
-                const ageMinutes = Math.max(0, Math.floor((Date.now() - session.updatedAt) / 60000))
+            const rawStorageState = session?.storageState ?? null
+            const sanitizedStorageState = rawStorageState
+                ? sanitizeStorageState(rawStorageState, this.bot.isMobile)
+                : null
+
+            if (sanitizedStorageState && rawStorageState) {
+                const ageMinutes = Math.max(0, Math.floor((Date.now() - session!.updatedAt) / 60000))
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'SESSION',
-                    `Restoring saved browser session | cookies=${session.storageState.cookies.length} | origins=${session.storageState.origins.length} | ageMinutes=${ageMinutes}`
+                    `Restoring sanitized browser session | rawCookies=${rawStorageState.cookies.length} | cleanCookies=${sanitizedStorageState.cookies.length} | origins=${sanitizedStorageState.origins?.length ?? 0} | ageMinutes=${ageMinutes}`
                 )
             } else {
                 this.bot.logger.info(
@@ -145,8 +154,8 @@ class Browser {
                 newContextOptions: {
                     permissions: [],
                     ignoreHTTPSErrors: ignoreCertificateErrors,
-                    // Restore cookies
-                    ...(session?.storageState ? { storageState: session.storageState } : {}),
+                    // Restore sanitized cookies
+                    ...(sanitizedStorageState ? { storageState: sanitizedStorageState } : {}),
                     ...(this.bot.isMobile
                         ? {
                               isMobile: true,
@@ -178,7 +187,7 @@ class Browser {
                     this.bot.logger.error(this.bot.isMobile, 'BROWSER', `Renderer crashed | ${p.url()}`)
                 )
             })
-            context.on('close', () => this.bot.logger.warn(this.bot.isMobile, 'BROWSER', 'Browser context closed'))
+            context.on('close', () => this.bot.logger.debug(this.bot.isMobile, 'BROWSER', 'Browser context closed'))
 
             context.setDefaultTimeout(this.bot.utils.stringToNumber(this.bot.config?.globalTimeout ?? 30000))
 

@@ -29,6 +29,9 @@
         "urlReward": true,
         "searchOnBing": true
     },
+    "display": {
+        "timeZone": "auto"
+    },
     "searchOnBingLocalQueries": false,
     "globalTimeout": "30sec",
     "searchSettings": {
@@ -53,8 +56,8 @@
         ],
         "searchResultVisitTime": "10sec",
         "searchDelay": {
-            "min": "30sec",
-            "max": "1min"
+            "min": "15sec",
+            "max": "30sec"
         },
         "readDelay": {
             "min": "30sec",

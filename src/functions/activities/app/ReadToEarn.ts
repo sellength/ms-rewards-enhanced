@@ -1,8 +1,9 @@
 import { URLs } from '../../../constants/urls'
-import { BING_APP_USER_AGENT } from '../../../constants/userAgents'
 import type { HttpRequestConfig } from '../../../util/Http'
 import { randomBytes } from 'crypto'
 import { BaseActivity } from '../BaseActivity'
+import { buildAppHeaders } from './AppRequest'
+import { findPromotionByOfferId, findReadToEarn } from './AppState'
 
 export class ReadToEarn extends BaseActivity {
     public async doReadToEarn() {
@@ -11,6 +12,42 @@ export class ReadToEarn extends BaseActivity {
                 this.bot.isMobile,
                 'READ-TO-EARN',
                 'Skipping: App access token not available, this activity requires it!'
+            )
+            return
+        }
+
+        let remainingPoints: number
+        let offerId: string
+        try {
+            const preflight = findReadToEarn(await this.bot.browser.func.getAppDashboardData())
+            remainingPoints = preflight.remaining
+            offerId = preflight.promotion?.attributes.offerid ?? ''
+            if (!offerId) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'READ-TO-EARN',
+                    '[PLAN] readToEarn skip_state_unavailable reason=current_offer_id_missing'
+                )
+                return
+            }
+            if (remainingPoints <= 0) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'READ-TO-EARN',
+                    '[PLAN] readToEarn skip_complete remaining=0'
+                )
+                return
+            }
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'READ-TO-EARN',
+                `[PLAN] readToEarn run_pending remaining=${remainingPoints}`
+            )
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'READ-TO-EARN',
+                `[PLAN] readToEarn skip_state_unavailable | message=${error instanceof Error ? error.message : String(error)}`
             )
             return
         }
@@ -31,15 +68,16 @@ export class ReadToEarn extends BaseActivity {
                 id: '1',
                 type: 101,
                 attributes: {
-                    offerid: 'ENUS_readarticle3_30points'
+                    offerid: offerId
                 },
                 country: this.bot.userData.geoLocale
             }
 
-            const articleCount = 10
+            const articleCount = Math.min(10, Math.ceil(remainingPoints / 3))
             let totalGained = 0
             let articlesRead = 0
             let oldBalance = startBalance
+            let previousRemaining = remainingPoints
 
             for (let i = 0; i < articleCount; ++i) {
                 jsonData.id = randomBytes(64).toString('hex')
@@ -53,14 +91,7 @@ export class ReadToEarn extends BaseActivity {
                 const request: HttpRequestConfig = {
                     url: URLs.platform.activities,
                     method: 'POST',
-                    headers: {
-                        Authorization: `Bearer ${this.bot.accessToken}`,
-                        'User-Agent': BING_APP_USER_AGENT,
-                        'Content-Type': 'application/json',
-                        'X-Rewards-Country': this.bot.userData.geoLocale,
-                        'X-Rewards-Language': this.bot.userData.langCode,
-                        'X-Rewards-ismobile': 'true'
-                    },
+                    headers: buildAppHeaders(this.bot, true),
                     data: JSON.stringify(jsonData)
                 }
 
@@ -74,6 +105,9 @@ export class ReadToEarn extends BaseActivity {
 
                 const newBalance = Number(response?.data?.response?.balance ?? oldBalance)
                 const gainedPoints = newBalance - oldBalance
+                await this.bot.utils.wait(750)
+                const updatedRemaining = await this.getRemainingPoints(offerId)
+                const progressed = Math.max(0, previousRemaining - updatedRemaining)
 
                 this.bot.logger.debug(
                     this.bot.isMobile,
@@ -81,11 +115,11 @@ export class ReadToEarn extends BaseActivity {
                     `Balance delta after article | article=${i + 1}/${articleCount} | previousBalance=${oldBalance} | currentBalance=${newBalance} | pointsGained=${gainedPoints}`
                 )
 
-                if (gainedPoints <= 0) {
+                if (progressed <= 0) {
                     this.bot.logger.info(
                         this.bot.isMobile,
                         'READ-TO-EARN',
-                        `No points gained, stopping Read to Earn | article=${i + 1}/${articleCount} | status=${response.status} | pointsGained=0 | currentBalance=${newBalance}`
+                        `SAAndroid Read progress did not change, stopping | article=${i + 1}/${articleCount} | status=${response.status} | remaining=${updatedRemaining}`
                     )
                     break
                 }
@@ -95,13 +129,16 @@ export class ReadToEarn extends BaseActivity {
                 totalGained += gainedPoints
                 articlesRead = i + 1
                 oldBalance = newBalance
+                previousRemaining = updatedRemaining
 
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'READ-TO-EARN',
-                    `Read article ${i + 1}/${articleCount} | status=${response.status} | pointsGained=${gainedPoints} | currentBalance=${newBalance}`,
+                    `Read article verified by SAAndroid | article=${i + 1}/${articleCount} | progressGained=${progressed} | pointsGained=${gainedPoints} | remaining=${updatedRemaining} | currentBalance=${newBalance}`,
                     'green'
                 )
+
+                if (updatedRemaining <= 0) break
 
                 this.bot.logger.debug(
                     this.bot.isMobile,
@@ -128,5 +165,11 @@ export class ReadToEarn extends BaseActivity {
                 `Error during Read to Earn | message=${error instanceof Error ? error.message : String(error)}`
             )
         }
+    }
+
+    private async getRemainingPoints(offerId: string): Promise<number> {
+        const progress = findPromotionByOfferId(await this.bot.browser.func.getAppDashboardData(), offerId)
+        if (!progress.promotion) throw new Error(`Current Read offer disappeared during verification: ${offerId}`)
+        return progress.remaining
     }
 }

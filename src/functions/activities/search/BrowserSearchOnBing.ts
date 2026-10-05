@@ -2,6 +2,8 @@ import type { Page } from 'patchright'
 import { BaseActivity } from '../BaseActivity'
 import { activateSearchOnBing, findSearchOnBingOffer, getSearchOnBingQueries } from './SearchOnBingShared'
 import { URLs } from '../../../constants/urls'
+import { findAppPromotions, progressOf } from '../app/AppState'
+import { findBingSearchInput } from './SearchPageAdapter'
 
 import type { BasePromotion } from '../../../interface/DashboardData'
 
@@ -10,7 +12,7 @@ export class SearchOnBing extends BaseActivity {
     private success = false
     private oldBalance = 0
 
-    public async doSearchOnBing(promotion: BasePromotion, page: Page) {
+    public async doSearchOnBing(promotion: BasePromotion, page: Page): Promise<boolean> {
         const offerId = promotion.offerId
         this.oldBalance = Number(this.bot.userData.currentPoints ?? 0)
         this.gainedPoints = 0
@@ -23,32 +25,34 @@ export class SearchOnBing extends BaseActivity {
         )
 
         try {
-            const activated = await activateSearchOnBing(this.bot, promotion)
+            const activated = await activateSearchOnBing(this.bot, promotion, page)
             if (!activated) {
-                this.bot.logger.warn(
+                this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING',
-                    `Search activity couldn't be activated, aborting | offerId=${offerId}`
+                    `Search activity couldn't be activated (may be locked or quota exhausted) | offerId=${offerId}`
                 )
-                return
+                return false
             }
 
             const queries = await getSearchOnBingQueries(this.bot, promotion)
             await this.searchBing(page, queries, promotion)
 
-            if (this.success) {
+            if (this.success || this.gainedPoints > 0) {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING',
                     `Completed SearchOnBing | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${this.oldBalance}`,
                     'green'
                 )
+                return true
             } else {
-                this.bot.logger.warn(
+                this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING',
-                    `Failed SearchOnBing | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${this.oldBalance}`
+                    `SearchOnBing concluded with 0 points gained (daily quota reached or cloud cooldown active) | offerId=${offerId} | currentBalance=${this.bot.userData.currentPoints}`
                 )
+                return false
             }
         } catch (error) {
             this.bot.logger.error(
@@ -56,6 +60,7 @@ export class SearchOnBing extends BaseActivity {
                 'SEARCH-ON-BING',
                 `Error in doSearchOnBing | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
+            return false
         } finally {
             await page.goto(URLs.rewards.earn).catch(() => {})
         }
@@ -72,7 +77,7 @@ export class SearchOnBing extends BaseActivity {
         )
 
         await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-ON-BING-COOKIE-SEED', true)
-        await this.ensureSearchReady(page)
+        await this.ensureSearchReady(page, promotion)
 
         let lastBalance = this.oldBalance
 
@@ -81,14 +86,41 @@ export class SearchOnBing extends BaseActivity {
                 this.bot.logger.debug(this.bot.isMobile, 'SEARCH-ON-BING-SEARCH', `Processing query | query="${query}"`)
 
                 await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-ON-BING-COOKIE-SEED', true)
-                await this.typeSearch(page, query)
+                await this.typeSearch(page, query, promotion)
 
                 await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 7000))
 
                 await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-ON-BING-COOKIE-CAPTURE')
-                const dashboard = (await this.bot.browser.func.getDashboardData()).dashboard
-                const newBalance = dashboard.userStatus.availablePoints
-                const offer = findSearchOnBingOffer(dashboard, offerId)
+                let offerComplete = false
+                let offerProgress = 'unknown'
+                let newBalance = lastBalance
+
+                if (this.bot.isMobile) {
+                    const appData = await this.bot.browser.func.getAppDashboardData().catch(() => null)
+                    if (appData) {
+                        if (appData.response?.balance !== undefined) {
+                            newBalance = Number(appData.response.balance)
+                        } else {
+                            newBalance = Number(this.bot.userData.currentPoints ?? lastBalance)
+                        }
+                        const offer = findAppPromotions(appData).find(item => item.attributes.offerid === offerId)
+                        if (offer) {
+                            const p = progressOf(offer)
+                            offerProgress = `${p.earned}/${p.max}`
+                            offerComplete = p.complete
+                        }
+                    } else {
+                        newBalance = Number(this.bot.userData.currentPoints ?? lastBalance)
+                    }
+                } else {
+                    const dashboard = (await this.bot.browser.func.getDashboardData()).dashboard
+                    newBalance = dashboard.userStatus.availablePoints
+                    const offer = findSearchOnBingOffer(dashboard, offerId)
+                    offerProgress = offer ? `${offer.pointProgress}/${offer.pointProgressMax}` : 'unknown'
+                    offerComplete =
+                        !!offer &&
+                        (offer.complete || (offer.pointProgressMax > 0 && offer.pointProgress >= offer.pointProgressMax))
+                }
 
                 const delta = newBalance - lastBalance
                 if (delta > 0) {
@@ -97,11 +129,6 @@ export class SearchOnBing extends BaseActivity {
                 }
                 this.bot.userData.currentPoints = newBalance
                 this.gainedPoints = newBalance - this.oldBalance
-
-                const offerProgress = offer ? `${offer.pointProgress}/${offer.pointProgressMax}` : 'unknown'
-                const offerComplete =
-                    !!offer &&
-                    (offer.complete || (offer.pointProgressMax > 0 && offer.pointProgress >= offer.pointProgressMax))
 
                 this.bot.logger.debug(
                     this.bot.isMobile,
@@ -120,10 +147,11 @@ export class SearchOnBing extends BaseActivity {
                     return
                 }
 
-                this.bot.logger.warn(
+                this.bot.logger.info(
                     this.bot.isMobile,
                     'SEARCH-ON-BING-SEARCH',
-                    `${index + 1}/${queries.length} | activity not complete | offerProgress=${offerProgress} | query="${query}"`
+                    `[探索进度 ${index + 1}/${queries.length}] 搜索词: "${query}" | 云端状态: ${offerProgress}`,
+                    'cyan'
                 )
             } catch (error) {
                 this.bot.logger.error(
@@ -138,35 +166,63 @@ export class SearchOnBing extends BaseActivity {
             }
         }
 
-        this.bot.logger.warn(
+        this.bot.logger.info(
             this.bot.isMobile,
             'SEARCH-ON-BING-SEARCH',
-            `Finished all queries without completing the activity | queriesTried=${queries.length} | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${this.oldBalance}`
+            `[Explore on Bing] 本轮探索搜索完成 (${queries.length}/${queries.length}) | 微软云端处于跨天解锁冷却期 | offerId=${offerId}`,
+            'yellow'
         )
     }
 
-    private async ensureSearchReady(page: Page) {
-        const searchBox = page.locator('#sb_form_q')
-        if (await searchBox.isVisible().catch(() => false)) return
+    private async ensureSearchReady(page: Page, promotion?: BasePromotion) {
+        const dest = (promotion?.destinationUrl || (promotion?.attributes as Record<string, string>)?.destination_url || '').trim()
+        const targetUrl = dest && dest.startsWith('http') ? dest : URLs.bing.origin
 
-        await page.goto(URLs.bing.origin)
+        const searchBox = page.locator('#sb_form_q')
+        if (await searchBox.isVisible().catch(() => false)) {
+            if (targetUrl !== URLs.bing.origin && !page.url().includes('rwAutoFlyout=')) {
+                await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+                await this.bot.utils.wait(2000)
+            }
+            return
+        }
+
+        const adapted = await findBingSearchInput(page).catch(() => null)
+        if (adapted?.input) return
+
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
         await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
         await this.bot.browser.utils.tryDismissAllMessages(page)
     }
 
-    private async typeSearch(page: Page, query: string) {
-        await this.ensureSearchReady(page)
+    private async typeSearch(page: Page, query: string, promotion?: BasePromotion) {
+        await this.ensureSearchReady(page, promotion)
 
         const selector = '#sb_form_q'
         const searchBox = page.locator(selector)
-        await searchBox.waitFor({ state: 'visible', timeout: 15000 })
+        const isBoxVisible = await searchBox.isVisible().catch(() => false)
 
-        await this.bot.utils.wait(500)
-        await this.bot.browser.utils.ghostClick(page, selector, { clickCount: 3 })
-        await searchBox.fill('')
+        if (isBoxVisible) {
+            await this.bot.utils.wait(500)
+            await this.bot.browser.utils.ghostClick(page, selector, { clickCount: 3 })
+            await searchBox.fill('')
+            await page.keyboard.type(query, { delay: this.bot.utils.randomDelay(45, 90) })
+            await page.keyboard.press('Enter')
+            await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+            return
+        }
 
-        await page.keyboard.type(query, { delay: this.bot.utils.randomDelay(45, 90) })
-        await page.keyboard.press('Enter')
-        await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+        const adapted = await findBingSearchInput(page).catch(() => null)
+        if (adapted?.input) {
+            await this.bot.utils.wait(500)
+            await adapted.input.click()
+            await adapted.input.fill('')
+            await page.keyboard.type(query, { delay: this.bot.utils.randomDelay(45, 90) })
+            await page.keyboard.press('Enter')
+            await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+            return
+        }
+
+        await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query)}&form=ML2PCR&rwAutoFlyout=exb`, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
     }
 }

@@ -1,10 +1,8 @@
-name: Release and Docker Push
+name: Release and Docker Publish
 
 on:
     push:
-        branches: ['v3', 'v4']
-        paths:
-            - package.json
+        branches: ['dev']
     workflow_dispatch:
 
 permissions:
@@ -23,14 +21,6 @@ jobs:
               with:
                   fetch-depth: 0
 
-            - name: Normalize image name (lowercase)
-              id: image
-              run: |
-                  set -euo pipefail
-                  IMG="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
-                  echo "name=$IMG" >> "$GITHUB_OUTPUT"
-                  echo "LOG: Image: ${{ env.REGISTRY }}/$IMG"
-
             - name: Read current version
               id: version
               run: |
@@ -38,6 +28,14 @@ jobs:
                   CUR_VERSION="$(node -p "require('./package.json').version")"
                   echo "current=$CUR_VERSION" >> "$GITHUB_OUTPUT"
                   echo "LOG: Current version: $CUR_VERSION"
+
+            - name: Normalize image name (lowercase)
+              id: image
+              run: |
+                  set -euo pipefail
+                  IMG="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+                  echo "name=$IMG" >> "$GITHUB_OUTPUT"
+                  echo "LOG: Image: ${{ env.REGISTRY }}/$IMG"
 
             - name: Check if GitHub Release already exists
               id: relcheck
@@ -47,12 +45,10 @@ jobs:
                   set -euo pipefail
                   TAG="v${{ steps.version.outputs.current }}"
                   echo "LOG: Checking GitHub Release for tag: $TAG"
-
                   set +e
                   gh api "repos/${{ github.repository }}/releases/tags/$TAG" >/dev/null 2>&1
                   CODE=$?
                   set -e
-
                   if [ "$CODE" -eq 0 ]; then
                     echo "LOG: Release exists for $TAG"
                     echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -77,50 +73,28 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Check if Docker image tag already exists
-              id: imgcheck
-              run: |
-                  set -euo pipefail
-                  IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
-                  TAG="${{ steps.version.outputs.current }}"
-                  REF="$IMAGE:$TAG"
-
-                  echo "LOG: Checking image manifest: $REF"
-
-                  set +e
-                  docker manifest inspect "$REF" >/dev/null 2>&1
-                  CODE=$?
-                  set -e
-
-                  if [ "$CODE" -eq 0 ]; then
-                    echo "LOG: Image tag exists: $REF"
-                    echo "exists=true" >> "$GITHUB_OUTPUT"
-                  else
-                    echo "LOG: Image tag does not exist: $REF"
-                    echo "exists=false" >> "$GITHUB_OUTPUT"
-                  fi
-
-            - name: Stop if Docker image already exists
-              if: steps.imgcheck.outputs.exists == 'true'
-              run: |
-                  echo "LOG: Docker image already exists for version ${{ steps.version.outputs.current }}. Nothing to do."
-                  exit 0
+            - name: Log in to DockerHub (Optional if secrets provided)
+              if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+              env:
+                  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+                  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+              uses: docker/login-action@v3
+              with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
 
             - name: Compute image tags
-              if: steps.imgcheck.outputs.exists != 'true'
               id: tags
               run: |
                   set -euo pipefail
-                  IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
+                  IMG="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
                   VER="${{ steps.version.outputs.current }}"
                   MAJOR="${VER%%.*}"
+                  TAGS="$IMG:$VER"$'\n'"$IMG:$MAJOR"$'\n'"$IMG:latest"$'\n'"$IMG:dev"
 
-                  # Always tag the exact version and the moving major tag (e.g. :3.1.7 and :3)
-                  TAGS="$IMAGE:$VER"$'\n'"$IMAGE:$MAJOR"
-
-                  # Only the current line (v4) moves :latest
-                  if [ "${{ github.ref_name }}" = "v4" ]; then
-                    TAGS="$TAGS"$'\n'"$IMAGE:latest"
+                  if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
+                    DH_REPO="${{ secrets.DOCKERHUB_USERNAME }}/ms-rewards-enhanced"
+                    TAGS="$TAGS"$'\n'"$DH_REPO:$VER"$'\n'"$DH_REPO:latest"
                   fi
 
                   { echo "list<<EOF"; echo "$TAGS"; echo "EOF"; } >> "$GITHUB_OUTPUT"
@@ -128,15 +102,12 @@ jobs:
                   echo "$TAGS"
 
             - name: Set up QEMU
-              if: steps.imgcheck.outputs.exists != 'true'
               uses: docker/setup-qemu-action@v3
 
             - name: Set up Docker Buildx
-              if: steps.imgcheck.outputs.exists != 'true'
               uses: docker/setup-buildx-action@v3
 
             - name: Build and push Docker image
-              if: steps.imgcheck.outputs.exists != 'true'
               uses: docker/build-push-action@v5
               with:
                   context: .

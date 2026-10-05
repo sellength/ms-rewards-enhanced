@@ -2,6 +2,7 @@ import { MicrosoftRewardsBot, executionContext } from '../../../index'
 import type { Account } from '../../../interface/Account'
 import { URLs } from '../../../constants/urls'
 import { SearchProgress, type SearchQuota } from './SearchProgress'
+import type { AppDashboardData } from '../../../interface/AppDashBoardData'
 
 interface SearchPlan {
     doMobile: boolean
@@ -17,11 +18,18 @@ export class SearchManager {
         this.progress = new SearchProgress(bot)
     }
 
-    async getSearchPoints(): Promise<SearchPlan> {
-        const counters = await this.progress.getCounters()
-        const quotas = this.progress.calculateQuotas(counters)
-        const mobileMissing = quotas.mobile.remaining
-        const desktopQuota = this.combineQuotas(quotas.desktop, quotas.edge)
+    async getSearchPoints(appData?: AppDashboardData): Promise<SearchPlan> {
+        const mobileEarnable = this.bot.browserEarnable?.mobileSearchPoints
+        const skipMobileCheck = mobileEarnable === 0
+        const mobileQuota = this.bot.config.workers.doMobileSearch && !skipMobileCheck
+            ? await this.progress.getMobileQuota(appData).catch(() => ({ earned: 0, max: 0, remaining: 0 }))
+            : { earned: 0, max: 0, remaining: 0 }
+        const counters = this.bot.config.workers.doDesktopSearch ? await this.progress.getCounters() : null
+        const quotas = counters ? this.progress.calculateQuotas(counters) : null
+        const mobileMissing = mobileQuota.remaining
+        const desktopQuota = quotas
+            ? this.combineQuotas(quotas.desktop, quotas.edge)
+            : { earned: 0, max: 0, remaining: 0 }
         const desktopMissing = desktopQuota.remaining
 
         const doMobile = this.bot.config.workers.doMobileSearch && mobileMissing > 0
@@ -30,9 +38,9 @@ export class SearchManager {
         this.bot.logger.info(
             'main',
             'SEARCH-MANAGER',
-            `Mobile: ${this.describeQuota(this.bot.config.workers.doMobileSearch, quotas.mobile)}` +
+                `Mobile (SAAndroid): ${this.describeQuota(this.bot.config.workers.doMobileSearch, mobileQuota, skipMobileCheck)}` +
                 ` | Desktop: ${this.describeQuota(this.bot.config.workers.doDesktopSearch, desktopQuota)}` +
-                `${quotas.edge.max > 0 ? ` | Edge: ${quotas.edge.earned}/${quotas.edge.max}` : ''}`
+                `${quotas && quotas.edge.max > 0 ? ` | Edge: ${quotas.edge.earned}/${quotas.edge.max}` : ''}`
         )
 
         return { doMobile, doDesktop, mobileMissing, desktopMissing }
@@ -49,8 +57,10 @@ export class SearchManager {
         )
     }
 
-    private describeQuota(enabled: boolean, quota: SearchQuota): string {
+    private describeQuota(enabled: boolean, quota: SearchQuota, isAlreadySkipped = false): string {
+        if (isAlreadySkipped) return 'skip (今日已满额跳过)'
         if (!enabled) return `skip (disabled, ${quota.earned}/${quota.max})`
+        if (quota.max <= 0) return 'skip (state unavailable, 0/0)'
         if (quota.remaining <= 0) return `skip (complete, ${quota.earned}/${quota.max})`
         return `run (${quota.earned}/${quota.max}, missing ${quota.remaining})`
     }

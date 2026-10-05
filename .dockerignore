@@ -8,7 +8,14 @@ sessions/
 .dev/
 diagnostics/
 note
-accounts.dev.json
-accounts.main.json
+accounts*.json
+config/
 config.json
 .playwright-chromium-installed
+.env
+*_dump.json
+*_dump.txt
+*.pcap
+*.pcapng
+*.har
+*.log

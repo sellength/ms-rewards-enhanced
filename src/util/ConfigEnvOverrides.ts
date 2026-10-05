@@ -70,6 +70,9 @@ export const ENV_OVERRIDES: EnvOverrideEntry[] = [
     { env: 'CONFIG_LOG_FILTER_LEVELS', path: 'consoleLogFilter.levels', type: 'array' },
     { env: 'CONFIG_LOG_FILTER_KEYWORDS', path: 'consoleLogFilter.keywords', type: 'array' },
 
+    // Webhook master switch
+    { env: 'CONFIG_WEBHOOK_ENABLED', path: 'webhook.enabled', type: 'bool' },
+
     // Discord webhook
     { env: 'CONFIG_DISCORD_ENABLED', path: 'webhook.discord.enabled', type: 'bool' },
     { env: 'CONFIG_DISCORD_URL', path: 'webhook.discord.url', type: 'string' },

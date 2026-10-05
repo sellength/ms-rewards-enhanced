@@ -266,7 +266,17 @@ const requestHandler = async (req, res) => {
         return res.end()
     }
 
-    if (TOKEN && !isAuthorized(req, url)) {
+    if (!TOKEN) {
+        // 安全审计整改：未设置 API_TOKEN 时不得开放控制接口
+        const isPublicInfo = method === 'GET' && (pathname === '/' || pathname === '/health')
+        if (!isPublicInfo) {
+            return sendJson(res, 403, {
+                error: 'Forbidden',
+                code: 'API_TOKEN_REQUIRED',
+                hint: 'No API_TOKEN set. Control and sensitive endpoints are strictly disabled until API_TOKEN is configured.'
+            })
+        }
+    } else if (!isAuthorized(req, url)) {
         return sendJson(res, 401, {
             error: 'Unauthorized',
             hint: 'Provide the API token via Authorization: Bearer or X-API-Key. Browser EventSource may use ?token= only on /events. All endpoints require authentication while API_TOKEN is set.'
@@ -754,37 +764,41 @@ server.on('error', err => {
     process.exit(1)
 })
 
-server.listen(PORT, HOST, () => {
-    log('INFO', `${pkgName} control API listening on http://${HOST}:${PORT} (headless - no UI)`)
-    log('INFO', `Launch command: ${command} ${args.join(' ')}`.trim())
-    log(
-        'INFO',
-        `Auth: ${TOKEN ? 'shared token required (API_TOKEN)' : 'DISABLED (no API_TOKEN set)'} | CORS origin: ${CORS_ORIGIN}`
-    )
-    log(
-        'INFO',
-        `Runtime state: memory-only | config writes: ${ALLOW_CONFIG_WRITE ? 'on' : 'off'} | schedule writes: ${ALLOW_SCHEDULE_WRITE ? 'on' : 'off'} | session deletion: account-scoped`
-    )
-    if (!TOKEN) {
-        const loopback = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1'
-        log(
-            loopback ? 'WARN' : 'ERROR',
-            loopback
-                ? 'No API_TOKEN set - the API is open to anything on this machine. Set API_TOKEN and give the dashboard the same value as CONTROL_API_TOKEN.'
-                : 'API is bound to a non-loopback address WITHOUT a token - anyone who can reach this port can start/stop the bot and read your logs. Set API_TOKEN.'
-        )
-    }
+export { server, requestHandler }
 
-    const ready = {
-        host: HOST,
-        port: PORT,
-        pid: process.pid,
-        name: pkgName,
-        version: pkgVersion,
-        auth: Boolean(TOKEN)
-    }
-    process.stdout.write(`__API_READY__ ${JSON.stringify(ready)}\n`)
-})
+if (!process.env.API_DISABLE_AUTO_LISTEN) {
+    server.listen(PORT, HOST, () => {
+        log('INFO', `${pkgName} control API listening on http://${HOST}:${PORT} (headless - no UI)`)
+        log('INFO', `Launch command: ${command} ${args.join(' ')}`.trim())
+        log(
+            'INFO',
+            `Auth: ${TOKEN ? 'shared token required (API_TOKEN)' : 'DISABLED (no API_TOKEN set)'} | CORS origin: ${CORS_ORIGIN}`
+        )
+        log(
+            'INFO',
+            `Runtime state: memory-only | config writes: ${ALLOW_CONFIG_WRITE ? 'on' : 'off'} | schedule writes: ${ALLOW_SCHEDULE_WRITE ? 'on' : 'off'} | session deletion: account-scoped`
+        )
+        if (!TOKEN) {
+            const loopback = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1'
+            log(
+                loopback ? 'WARN' : 'ERROR',
+                loopback
+                    ? 'No API_TOKEN set - the API is open to anything on this machine. Set API_TOKEN and give the dashboard the same value as CONTROL_API_TOKEN.'
+                    : 'API is bound to a non-loopback address WITHOUT a token - anyone who can reach this port can start/stop the bot and read your logs. Set API_TOKEN.'
+            )
+        }
+
+        const ready = {
+            host: HOST,
+            port: PORT,
+            pid: process.pid,
+            name: pkgName,
+            version: pkgVersion,
+            auth: Boolean(TOKEN)
+        }
+        process.stdout.write(`__API_READY__ ${JSON.stringify(ready)}\n`)
+    })
+}
 
 let shuttingDown = false
 async function shutdown(signal, { force = false } = {}) {
