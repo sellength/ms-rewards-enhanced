@@ -2084,6 +2084,36 @@ function getSavedMobileState(profileId = null) {
                 state.readToEarnProgress = 0
                 state.readToEarnMax = 0
             }
+            const today = new Date().toISOString().slice(0, 10)
+            const stateDate = normalizeDate(state.currentDate || state.dailySetDate || state.taskRefresh?.accountDate || state.syncedAt || state.updatedAt)
+            if (stateDate && stateDate !== today) {
+                state.isNewDay = true
+                state.currentDate = today
+                state.dailySetDate = `${today.slice(5, 7)}/${today.slice(8, 10)}/${today.slice(0, 4)}`
+                if (state.taskRefresh) {
+                    state.taskRefresh.accountDate = state.dailySetDate
+                }
+                state.todayEarned = 0
+                state.officialAppTodayEarned = 0
+                state.accountTodayPoints = 0
+                state.levelInfoTodayPoints = 0
+                state.mobileTaskEarned = 0
+                state.mobileSearchProgress = 0
+                state.mobileSearch = `0/${state.mobileSearchMax || 200}`
+                state.readToEarnProgress = 0
+                state.readToEarnDone = false
+                state.readToEarn = `0/${state.readToEarnMax || 30}`
+                state.checkInDone = false
+                state.checkInEarned = 0
+                state.checkIn = `0/1 今日待签到 (${state.checkInMax || 5}分)`
+                state.allTasksDone = false
+                if (Array.isArray(state.dailySetCards)) {
+                    state.dailySetCards = state.dailySetCards.map(c => ({ ...c, complete: false, entryProbeResult: null }))
+                }
+                try {
+                    fs.writeFileSync(targetFile, JSON.stringify(state, null, 2), 'utf-8')
+                } catch (_) {}
+            }
             const inferred = inferRegionFromPromotions([...(state.dailySetCards || []), ...(state.promoCards || []), ...(state.bonusPromoCards || [])])
             if (inferred) {
                 state.region = inferred
@@ -3545,14 +3575,24 @@ const server = http.createServer(async (req, res) => {
         }
         const generalPromos = Array.from(seenOffers.values())
 
+        const todayIso = new Date().toISOString().slice(0, 10)
+        const desktopDate = normalizeDate(desktopState.currentDate || desktopState.date || desktopState.dailySetDate)
+        const mobileDate = normalizeDate(mobileState.currentDate || mobileState.dailySetDate || mobileState.taskRefresh?.accountDate)
+
+        const isDesktopToday = (desktopDate === todayIso || !desktopDate)
+        const isMobileToday = (mobileDate === todayIso)
+
+        const dsEarned = dsCards.reduce((sum, c) => sum + (c.complete ? (c.points || 10) : 0), 0)
+        const dsMax = dsCards.reduce((sum, c) => sum + (c.points || 10), 0) || 30
+
         const shared = {
             dailySet: {
                 cards: dsCards,
                 done: dsDone,
                 total: dsTotal,
                 complete: dsTotal > 0 ? dsDone === dsTotal : false,
-                earned: desktopState.dailyEarned || mobileState.todayEarned || 0,
-                max: desktopState.dailyMax || mobileState.todayMax || 0
+                earned: dsEarned,
+                max: dsMax
             },
             keepEarning: {
                 quota: desktopState.promotionsQuota || '0/0',
@@ -3576,10 +3616,10 @@ const server = http.createServer(async (req, res) => {
         
         const desktop = {
             search: {
-                quota: desktopState.pcSearchQuota || '0/0',
-                earned: desktopState.pcDailyEarned || 0,
-                max: desktopState.pcDailyMax || 0,
-                ...parseFraction(desktopState.pcSearchQuota)
+                quota: isDesktopToday ? (desktopState.pcSearchQuota || '0/0') : '0/0',
+                earned: isDesktopToday ? (desktopState.pcDailyEarned || 0) : 0,
+                max: isDesktopToday ? (desktopState.pcDailyMax || 0) : 0,
+                ...parseFraction(isDesktopToday ? (desktopState.pcSearchQuota || '0/0') : '0/0')
             },
             edgeBrowsing: {
                 status: desktopState.streakDetails?.edgeBrowsing || '就绪'
@@ -3588,23 +3628,28 @@ const server = http.createServer(async (req, res) => {
         
         const mobile = {
             checkIn: {
-                status: mobileState.checkIn || '未签到',
+                status: isMobileToday ? (mobileState.checkIn || '未签到') : '0/1 今日待签到 (5分)',
                 streak: mobileState.checkInStreak || 0,
-                complete: Boolean(mobileState.checkInDone || (mobileState.checkIn && (/✔|完成|已签到/.test(mobileState.checkIn))))
+                complete: isMobileToday ? Boolean(mobileState.checkInDone || (mobileState.checkIn && (/✔|完成|已签到/.test(mobileState.checkIn)))) : false
             },
             readToEarn: {
-                progress: mobileState.readToEarn || '0/30',
-                ...parseFraction(mobileState.readToEarn)
+                progress: isMobileToday ? (mobileState.readToEarn || '0/30') : '0/30',
+                ...parseFraction(isMobileToday ? (mobileState.readToEarn || '0/30') : '0/30')
             },
             search: {
-                quota: mobileState.mobileSearch || '0/0',
-                ...parseFraction(mobileState.mobileSearch)
+                quota: isMobileToday ? (mobileState.mobileSearch || '0/0') : `0/${mobileState.mobileSearchMax || 200}`,
+                ...parseFraction(isMobileToday ? (mobileState.mobileSearch || '0/0') : `0/${mobileState.mobileSearchMax || 200}`)
             }
         }
         
+        const desktopTodayEarned = isDesktopToday ? (Number(desktopState.dailyEarned) || 0) : 0
+        const mobileTodayEarned = isMobileToday ? (Number(mobileState.todayEarned) || 0) : 0
+        const desktopTodayMax = isDesktopToday ? (Number(desktopState.dailyMax) || 0) : 0
+        const mobileTodayMax = isMobileToday ? (Number(mobileState.todayMax) || 0) : 0
+
         const totalPoints = Math.max(Number(desktopState.totalPoints) || 0, Number(mobileState.totalPoints) || 0)
-        const todayEarned = Math.max(Number(desktopState.dailyEarned) || 0, Number(mobileState.todayEarned) || 0)
-        const todayMax = Math.max(Number(desktopState.dailyMax) || 0, Number(mobileState.todayMax) || 0)
+        const todayEarned = Math.max(desktopTodayEarned, mobileTodayEarned)
+        const todayMax = Math.max(desktopTodayMax, mobileTodayMax)
         
         const region = (activeProfile?.region && activeProfile.region !== 'AUTO')
             ? activeProfile.region
@@ -3731,6 +3776,37 @@ const server = http.createServer(async (req, res) => {
         stopBotProcess()
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ success: true, message: 'Automation stopped' }))
+        return
+    }
+
+    if (pathname === '/api/about' && req.method === 'GET') {
+        let pkg = { name: 'ms-rewards-enhanced', version: '0.1.1', license: 'GPL-3.0-or-later' }
+        try {
+            pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8'))
+        } catch (_) {}
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+            name: pkg.name || 'ms-rewards-enhanced',
+            version: pkg.version || '0.1.1',
+            description: pkg.description || 'Microsoft Rewards Automation Enhanced Edition with Fluent Web UI & Adaptive Agent',
+            license: pkg.license || 'GPL-3.0-or-later',
+            upstream: 'https://github.com/TheNetsky/Microsoft-Rewards-Script',
+            repository: 'https://github.com/sellength/ms-rewards-enhanced',
+            dockerImage: `ghcr.io/sellength/ms-rewards-enhanced:${pkg.version || '0.1.1'}`,
+            changelogUrl: 'https://github.com/sellength/ms-rewards-enhanced/blob/dev/CUSTOM_CHANGELOG.md',
+            releasesUrl: 'https://github.com/sellength/ms-rewards-enhanced/releases',
+            currentRelease: {
+                version: `v${pkg.version || '0.1.1'}`,
+                date: '2026-10-08',
+                title: '跨天状态隔离重置、Daily Set计分修正与关于面板',
+                highlights: [
+                    '⚡️ 跨天日历隔离与缓存自动重置：修复新的一天到来时移动端状态未自动归零、导致残留上一日 260/380 分缓存的问题',
+                    '🎯 Daily Set 独立计分修正：修复 /api/unified/state 中每日三连任务展示的已得积分被全天总分污染的问题',
+                    'ℹ️ 全新“关于项目”面板：侧边栏与主区域新增 Fluent 风格关于页面，实时展示系统版本与最新更新亮点',
+                    '📖 历史更新日志直达：全量历史版本记录一键跳转至 GitHub 仓库查阅，保持 Web 控制台轻量利落'
+                ]
+            }
+        }))
         return
     }
 

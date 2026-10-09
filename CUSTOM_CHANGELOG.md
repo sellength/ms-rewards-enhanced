@@ -1,5 +1,13 @@
 # 🛠️ Microsoft Rewards 定制版本与变更历史 (Custom Patch Changelog)
 
+## 2026-10-08 — [v0.1.1] 跨天状态隔离重置、Daily Set计分修正与关于面板
+
+- REQ-VERSION-ABOUT-AND-DAY-ISOLATION-20261008：
+  - 跨天缓存重置与日历隔离：修复跨天换天时移动端缓存状态未自动归零（残留前一日 260/380 分）的问题，`/api/unified/state` 严格限制今日积分仅统计当前日历日；
+  - Daily Set 独立计分修正：修复统一状态接口中 Daily Set 任务卡片进度被全日总分污染的问题，严格统计 Daily Set 自身卡片分值（30/30）；
+  - 控制台“关于项目 (About)”面板：新增 Fluent 风格关于页面，展示当前版本号（v0.1.1）、开源协议、上游致谢与当前版本核心 Changelog；
+  - 历史更新日志直达：历史全量版本更新日志一键直达 GitHub Releases 与 CUSTOM_CHANGELOG.md，保持控制台界面轻量清爽。
+
 ## 2026-10-03 — 人机协同半自动风控质询响应、避险通知与高危任务熔断机制 (HITL)
 
 - REQ-HITL-BOT-CHALLENGE-POLICY-20261003：

@@ -476,6 +476,22 @@ test('Bing App Today points use Daily Set, active Search and Read totals', () =>
     assert.doesNotMatch(webSource, /const todayEarned = accountTodayPoints \?\? mobileTaskEarned/)
 })
 
+test('getSavedMobileState resets points and tasks across calendar days', () => {
+    assert.match(webSource, /function getSavedMobileState\(profileId = null\)/)
+    assert.match(webSource, /stateDate && stateDate !== today/)
+    assert.match(webSource, /state\.todayEarned = 0/)
+    assert.match(webSource, /state\.mobileSearch = `0\/\${state\.mobileSearchMax \|\| 200}`/)
+    assert.match(webSource, /state\.readToEarn = `0\/\${state\.readToEarnMax \|\| 30}`/)
+})
+
+test('/api/unified/state isolates today earned points to the current calendar date', () => {
+    assert.match(webSource, /const isDesktopToday = \(desktopDate === todayIso \|\| !desktopDate\)/)
+    assert.match(webSource, /const isMobileToday = \(mobileDate === todayIso\)/)
+    assert.match(webSource, /const todayEarned = Math\.max\(desktopTodayEarned, mobileTodayEarned\)/)
+    assert.match(webSource, /const todayMax = Math\.max\(desktopTodayMax, mobileTodayMax\)/)
+    assert.doesNotMatch(webSource, /earned:\s*desktopState\.dailyEarned\s*\|\|\s*mobileState\.todayEarned/)
+})
+
 test('PC Daily Set cards use the exact current collection without streak or adjacent-date fallback', () => {
     const start = webSource.indexOf('async function fetchLiveMicrosoftState()')
     const end = webSource.indexOf('function normalizeDate', start)
@@ -920,6 +936,14 @@ test('PC Keep earning executor skips tomorrow locked promotions without submitti
 
     assert.deepEqual(submitted, [])
     assert.ok(logs.some(message => message.includes('skip_tomorrow_locked offerId=tomorrow-locked-offer')))
+})
+
+test('/api/about returns application version, upstream credit, and current release changelog', () => {
+    assert.match(webSource, /pathname === '\/api\/about' && req\.method === 'GET'/)
+    assert.match(webSource, /version:\s*pkg\.version/)
+    assert.match(webSource, /upstream:\s*'https:\/\/github\.com\/TheNetsky\/Microsoft-Rewards-Script'/)
+    assert.match(webSource, /repository:\s*'https:\/\/github\.com\/sellength\/ms-rewards-enhanced'/)
+    assert.match(webSource, /currentRelease:/)
 })
 
 

@@ -2742,6 +2742,10 @@
                     <span class="nav-icon">📢</span>
                     <span class="nav-label">信息推送与设置</span>
                 </li>
+                <li class="nav-item" onclick="switchView('about')" id="navAbout">
+                    <span class="nav-icon">ℹ️</span>
+                    <span class="nav-label">关于项目</span>
+                </li>
             </ul>
         </div>
 
@@ -4128,6 +4132,98 @@
                 </div>
             </div>
         </div>
+
+        <!-- VIEW 5: ABOUT (关于项目与更新日志) -->
+        <div class="view-section hidden" id="viewAbout">
+            <header class="topbar">
+                <div class="topbar-left">
+                    <h1 class="page-title">ℹ️ 关于项目</h1>
+                    <span style="font-size: 0.82rem; color: var(--text-muted); margin-left: 8px;">系统版本、开源协议与更新日志</span>
+                </div>
+            </header>
+
+            <div class="settings-content" style="max-width: 960px; margin: 0 auto; padding-bottom: 40px;">
+                <!-- 1. Basic Info & Version Banner -->
+                <div class="settings-card" style="position: relative; overflow: hidden;">
+                    <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap;">
+                        <div style="display: flex; gap: 16px; align-items: center;">
+                            <div style="width: 54px; height: 54px; border-radius: 12px; background: linear-gradient(135deg, #0078d4, #00bcf2); display: flex; align-items: center; justify-content: center; font-size: 1.8rem; box-shadow: 0 4px 12px rgba(0,120,212,0.25);">
+                                🎁
+                            </div>
+                            <div>
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <h2 style="font-size: 1.3rem; font-weight: 700; margin: 0; color: var(--text-primary);" id="aboutAppName">Microsoft Rewards Enhanced Edition</h2>
+                                    <span id="aboutAppVersionBadge" style="background: var(--ms-blue-light); color: var(--ms-blue); border: 1px solid rgba(0,120,212,0.3); font-size: 0.78rem; font-weight: 700; padding: 2px 8px; border-radius: 12px;">v0.1.1</span>
+                                </div>
+                                <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;" id="aboutAppDesc">
+                                    Microsoft Rewards 自动化增强版 · 搭载 Fluent 现代化 Web 控制台与自适应风控引擎
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 0.76rem; background: var(--bg-subtle); padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-color); color: var(--text-muted);">
+                                📜 开源协议: <strong id="aboutAppLicense" style="color: var(--text-primary);">GPL-3.0</strong>
+                            </span>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-color); display: flex; gap: 12px; flex-wrap: wrap;">
+                        <a href="https://github.com/sellength/ms-rewards-enhanced" target="_blank" rel="noopener noreferrer" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.84rem; padding: 6px 12px; background: var(--bg-subtle); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                            <span>📦</span>
+                            <span>GitHub 源码仓库</span>
+                        </a>
+                        <a href="https://github.com/TheNetsky/Microsoft-Rewards-Script" target="_blank" rel="noopener noreferrer" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.84rem; padding: 6px 12px; background: var(--bg-subtle); color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                            <span>🌱</span>
+                            <span>鸣谢原始上游 (TheNetsky)</span>
+                        </a>
+                        <a href="https://github.com/sellength/ms-rewards-enhanced/pkgs/container/ms-rewards-enhanced" target="_blank" rel="noopener noreferrer" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.84rem; padding: 6px 12px; background: var(--bg-subtle); color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                            <span>🐳</span>
+                            <span>Docker 官方镜像 (GHCR)</span>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- 2. Latest Version Changelog Card -->
+                <div class="settings-card" style="margin-top: 20px;">
+                    <div class="settings-card-head" style="display: flex; justify-content: space-between; align-items: center;">
+                        <div class="settings-card-title">
+                            <span>✨ 当前版本更新日志 (Changelog)</span>
+                        </div>
+                        <span id="aboutChangelogDate" style="font-size: 0.78rem; color: var(--text-muted); background: var(--bg-subtle); padding: 2px 8px; border-radius: 4px;">2026-10-08</span>
+                    </div>
+
+                    <div style="margin-top: 10px;">
+                        <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary); margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                            <span style="color: var(--ms-blue);" id="aboutChangelogVer">v0.1.1</span>
+                            <span id="aboutChangelogTitle" style="color: var(--text-secondary); font-weight: 600;">跨天状态隔离重置、Daily Set计分修正与关于面板</span>
+                        </div>
+
+                        <ul id="aboutChangelogList" style="margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 0.88rem; line-height: 1.8;">
+                            <li><strong>⚡️ 跨天日历隔离与缓存自动重置：</strong> 修复新的一天到来时移动端状态未自动归零、导致残留上一日 260/380 分缓存的问题；</li>
+                            <li><strong>🎯 Daily Set 独立计分修正：</strong> 修复 <code>/api/unified/state</code> 中每日三连任务展示的已得积分被全天总分污染的问题，严格统计卡片自身分值（30/30）；</li>
+                            <li><strong>ℹ️ 全新“关于项目”面板：</strong> 侧边栏与主工作区新增 Fluent 风格关于页面，实时展示系统版本与最新更新亮点；</li>
+                            <li><strong>📖 历史更新日志直达：</strong> 保持 Web 控制台轻量利落，全量历史版本记录一键跳转至 GitHub 仓库查阅。</li>
+                        </ul>
+                    </div>
+
+                    <!-- Jump to GitHub Full History -->
+                    <div style="margin-top: 22px; padding: 14px 16px; background: rgba(0, 120, 212, 0.06); border: 1px dashed rgba(0, 120, 212, 0.3); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;">
+                        <div style="font-size: 0.84rem; color: var(--text-secondary);">
+                            <strong>📜 想查阅更早的历史更新记录？</strong><br>
+                            完整历史发布记录（v0.1.0 及之前）已集中归档在 GitHub 官方仓库中，便于按版本精准溯源。
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <a href="https://github.com/sellength/ms-rewards-enhanced/blob/dev/CUSTOM_CHANGELOG.md" target="_blank" rel="noopener noreferrer" class="btn-action btn-primary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; padding: 8px 14px; white-space: nowrap;">
+                                <span>📖 查看 GitHub 完整历史日志</span>
+                            </a>
+                            <a href="https://github.com/sellength/ms-rewards-enhanced/releases" target="_blank" rel="noopener noreferrer" class="btn-action btn-secondary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; padding: 8px 14px; white-space: nowrap;">
+                                <span>🏷️ Releases 发布页</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
 
@@ -5345,12 +5441,14 @@
             const vSet = document.getElementById('viewSettings');
             const vAcc = document.getElementById('viewAccount');
             const vAi = document.getElementById('viewAi');
+            const vAbout = document.getElementById('viewAbout');
             const nUni = document.getElementById('navUnified');
             const nDash = document.getElementById('navDashboard');
             const nMob = document.getElementById('navMobile');
             const nSet = document.getElementById('navSettings');
             const nAcc = document.getElementById('navAccount');
             const nAi = document.getElementById('navAi');
+            const nAbout = document.getElementById('navAbout');
 
             if (vUni) vUni.classList.add('hidden');
             if (vDash) vDash.classList.add('hidden');
@@ -5358,12 +5456,14 @@
             if (vSet) vSet.classList.add('hidden');
             if (vAcc) vAcc.classList.add('hidden');
             if (vAi) vAi.classList.add('hidden');
+            if (vAbout) vAbout.classList.add('hidden');
             if (nUni) nUni.classList.remove('active');
             if (nDash) nDash.classList.remove('active');
             if (nMob) nMob.classList.remove('active');
             if (nSet) nSet.classList.remove('active');
             if (nAcc) nAcc.classList.remove('active');
             if (nAi) nAi.classList.remove('active');
+            if (nAbout) nAbout.classList.remove('active');
 
             if (view === 'unified') {
                 if (vUni) vUni.classList.remove('hidden');
@@ -5378,11 +5478,45 @@
                 if (vAi) vAi.classList.remove('hidden');
                 if (nAi) nAi.classList.add('active');
                 loadAiConfiguration(activeProfileId);
+            } else if (view === 'about') {
+                if (vAbout) vAbout.classList.remove('hidden');
+                if (nAbout) nAbout.classList.add('active');
+                loadAboutInfo();
             } else {
                 if (vSet) vSet.classList.remove('hidden');
                 if (nSet) nSet.classList.add('active');
                 loadConfigForm();
             }
+        }
+
+        async function loadAboutInfo() {
+            try {
+                const res = await fetch('/api/about');
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.version) {
+                    const badge = document.getElementById('aboutAppVersionBadge');
+                    if (badge) badge.textContent = `v${data.version}`;
+                    const chVer = document.getElementById('aboutChangelogVer');
+                    if (chVer) chVer.textContent = `v${data.version}`;
+                }
+                if (data.currentRelease) {
+                    if (data.currentRelease.date) {
+                        const dEl = document.getElementById('aboutChangelogDate');
+                        if (dEl) dEl.textContent = data.currentRelease.date;
+                    }
+                    if (data.currentRelease.title) {
+                        const tEl = document.getElementById('aboutChangelogTitle');
+                        if (tEl) tEl.textContent = data.currentRelease.title;
+                    }
+                    if (Array.isArray(data.currentRelease.highlights) && data.currentRelease.highlights.length) {
+                        const ul = document.getElementById('aboutChangelogList');
+                        if (ul) {
+                            ul.innerHTML = data.currentRelease.highlights.map(item => `<li>${item}</li>`).join('');
+                        }
+                    }
+                }
+            } catch (_) {}
         }
 
         function toggleTheme() {
