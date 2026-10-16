@@ -1,7 +1,7 @@
 # Microsoft Rewards Script Enhanced (ms-rewards-enhanced)
 
 [![GitHub License](https://img.shields.io/badge/License-GPL%20v3-blue.svg?style=for-the-badge)](./LICENSE)
-[![Release](https://img.shields.io/badge/Release-v0.1.0-brightgreen?style=for-the-badge)](https://github.com/sellength/ms-rewards-enhanced/releases)
+[![Release](https://img.shields.io/badge/Release-v0.1.2-brightgreen?style=for-the-badge)](https://github.com/sellength/ms-rewards-enhanced/releases)
 [![Docker](https://img.shields.io/badge/Docker-GHCR-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://github.com/sellength/ms-rewards-enhanced/pkgs/container/ms-rewards-enhanced)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
@@ -54,7 +54,7 @@
 
 ## 🐳 快速开始：Docker 容器部署 (推荐)
 
-项目预构建 Docker 镜像托管于 GitHub Container Registry (GHCR)：`ghcr.io/sellength/ms-rewards-enhanced:0.1.0`。
+项目预构建 Docker 镜像托管于 GitHub Container Registry (GHCR)：`ghcr.io/sellength/ms-rewards-enhanced:0.1.2`（或使用 `:latest` 标签）。
 
 ### 1. 准备环境配置文件 (`.env`)
 
@@ -63,11 +63,15 @@
 ```env
 # 账号 1
 ACCOUNT_1_EMAIL=your_email@outlook.com
-# ACCOUNT_1_PASSWORD=your_password (若使用无密码登录/Authenticator验证可不填)
+# ACCOUNT_1_PASSWORD=your_password (若使用无密码登录/Authenticator验证可不填；Docker 无头模式下触发任务后可在控制台日志或 docker compose logs -f 查看配对数字并在手机端确认)
 # ACCOUNT_1_TOTP_SECRET=JBSWY3DPEHPK3PXP (可选：2FA 两步验证密钥)
 
-# 代理配置 (可选：美区或海外账号建议配置稳定代理)
-# ACCOUNT_1_PROXY_URL=http://user:pass@proxy-server:port
+# 代理配置 (可选：美区或海外账号建议配置稳定代理，主机、端口与认证须拆项填写)
+# ACCOUNT_1_PROXY_URL=http://proxy-server
+# ACCOUNT_1_PROXY_PORT=7890
+# ACCOUNT_1_PROXY_USERNAME=user
+# ACCOUNT_1_PROXY_PASSWORD=pass
+# ACCOUNT_1_PROXY_HTTP=true
 ```
 
 ---
@@ -79,7 +83,7 @@ ACCOUNT_1_EMAIL=your_email@outlook.com
 ```yaml
 services:
   ms-rewards:
-    image: ghcr.io/sellength/ms-rewards-enhanced:0.1.0
+    image: ghcr.io/sellength/ms-rewards-enhanced:0.1.2
     container_name: ms-rewards-enhanced
     restart: unless-stopped
     ports:
@@ -93,7 +97,7 @@ services:
       TZ: 'Asia/Shanghai'           # 容器时区
       WEB_MODE: 'true'              # 启用 Fluent Web 控制台模式
       HOST: '0.0.0.0'               # 允许局域网访问
-      ALLOWED_HOSTS: 'localhost,127.0.0.1,192.168.*' # 允许的主机头(防 DNS 重绑定)
+      ALLOWED_HOSTS: 'localhost,127.0.0.1,192.168.*,10.*' # 允许的主机头(防 DNS 重绑定)
       # RUN_ON_START: 'true'        # 启动时是否立即运行一次任务
       # CRON_SCHEDULE: '0 8 * * *'  # 每日定时执行计划(例如每天早上 08:00)
     security_opt:
@@ -123,8 +127,9 @@ docker run -d \
   --env-file .env \
   -e TZ=Asia/Shanghai \
   -e WEB_MODE=true \
+  -e ALLOWED_HOSTS="localhost,127.0.0.1,192.168.*,10.*" \
   --restart unless-stopped \
-  ghcr.io/sellength/ms-rewards-enhanced:0.1.0
+  ghcr.io/sellength/ms-rewards-enhanced:0.1.2
 ```
 
 ---
@@ -219,7 +224,7 @@ npm start
 | `searchSettings.parallelSearching` | boolean | `true` | PC 与移动端并行搜索 | `CONFIG_SEARCH_PARALLEL` |
 | `searchSettings.clusterSearch` | boolean | `true` | 基于必应智能联想词聚类搜索 | `CONFIG_SEARCH_CLUSTER` |
 | `searchSettings.searchDelay.min` | string | `"15sec"` | 单次搜索最小随机间隔 | `CONFIG_SEARCH_DELAY_MIN` |
-| `searchSettings.searchDelay.max` | string | `"35sec"` | 单次搜索最大随机间隔 | `CONFIG_SEARCH_DELAY_MAX` |
+| `searchSettings.searchDelay.max` | string | `"30sec"` | 单次搜索最大随机间隔 | `CONFIG_SEARCH_DELAY_MAX` |
 
 ---
 

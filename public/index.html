@@ -4153,7 +4153,7 @@
                             <div>
                                 <div style="display: flex; align-items: center; gap: 10px;">
                                     <h2 style="font-size: 1.3rem; font-weight: 700; margin: 0; color: var(--text-primary);" id="aboutAppName">Microsoft Rewards Enhanced Edition</h2>
-                                    <span id="aboutAppVersionBadge" style="background: var(--ms-blue-light); color: var(--ms-blue); border: 1px solid rgba(0,120,212,0.3); font-size: 0.78rem; font-weight: 700; padding: 2px 8px; border-radius: 12px;">v0.1.1</span>
+                                    <span id="aboutAppVersionBadge" style="background: var(--ms-blue-light); color: var(--ms-blue); border: 1px solid rgba(0,120,212,0.3); font-size: 0.78rem; font-weight: 700; padding: 2px 8px; border-radius: 12px;">v0.1.2</span>
                                 </div>
                                 <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;" id="aboutAppDesc">
                                     Microsoft Rewards 自动化增强版 · 搭载 Fluent 现代化 Web 控制台与自适应风控引擎
@@ -4189,20 +4189,20 @@
                         <div class="settings-card-title">
                             <span>✨ 当前版本更新日志 (Changelog)</span>
                         </div>
-                        <span id="aboutChangelogDate" style="font-size: 0.78rem; color: var(--text-muted); background: var(--bg-subtle); padding: 2px 8px; border-radius: 4px;">2026-10-08</span>
+                        <span id="aboutChangelogDate" style="font-size: 0.78rem; color: var(--text-muted); background: var(--bg-subtle); padding: 2px 8px; border-radius: 4px;">2026-10-16</span>
                     </div>
 
                     <div style="margin-top: 10px;">
                         <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary); margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-                            <span style="color: var(--ms-blue);" id="aboutChangelogVer">v0.1.1</span>
-                            <span id="aboutChangelogTitle" style="color: var(--text-secondary); font-weight: 600;">跨天状态隔离重置、Daily Set计分修正与关于面板</span>
+                            <span style="color: var(--ms-blue);" id="aboutChangelogVer">v0.1.2</span>
+                            <span id="aboutChangelogTitle" style="color: var(--text-secondary); font-weight: 600;">Docker 容器沙箱修复、局域网安全通配与安装体验校准</span>
                         </div>
 
                         <ul id="aboutChangelogList" style="margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 0.88rem; line-height: 1.8;">
-                            <li><strong>⚡️ 跨天日历隔离与缓存自动重置：</strong> 修复新的一天到来时移动端状态未自动归零、导致残留上一日 260/380 分缓存的问题；</li>
-                            <li><strong>🎯 Daily Set 独立计分修正：</strong> 修复 <code>/api/unified/state</code> 中每日三连任务展示的已得积分被全天总分污染的问题，严格统计卡片自身分值（30/30）；</li>
-                            <li><strong>ℹ️ 全新“关于项目”面板：</strong> 侧边栏与主工作区新增 Fluent 风格关于页面，实时展示系统版本与最新更新亮点；</li>
-                            <li><strong>📖 历史更新日志直达：</strong> 保持 Web 控制台轻量利落，全量历史版本记录一键跳转至 GitHub 仓库查阅。</li>
+                            <li><strong>🐳 容器内 Chromium 沙箱自适应：</strong> 修复 Linux Docker 非特权降权用户下启动浏览器报 <code>No usable sandbox</code> 崩溃的问题；</li>
+                            <li><strong>🔑 环境变量账号无缝回退：</strong> 支持直接读取 Docker <code>env_file</code> 注入的 <code>ACCOUNT_1_*</code> 凭据，解决控制台账号显示为空与覆盖问题；</li>
+                            <li><strong>🌐 局域网 ALLOWED_HOSTS 安全通配：</strong> 支持 <code>192.168.*</code> / <code>10.*</code> 网段通配符并严格校验四段纯数字 IPv4，阻断伪造域名重绑定；</li>
+                            <li><strong>⏰ 容器定时与优雅退出：</strong> 补齐 <code>WEB_MODE</code> 下 <code>CRON_SCHEDULE</code> 后台定时调度，支持 <code>SIGTERM</code> 秒级优雅停止容器。</li>
                         </ul>
                     </div>
 
@@ -4210,7 +4210,7 @@
                     <div style="margin-top: 22px; padding: 14px 16px; background: rgba(0, 120, 212, 0.06); border: 1px dashed rgba(0, 120, 212, 0.3); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;">
                         <div style="font-size: 0.84rem; color: var(--text-secondary);">
                             <strong>📜 想查阅更早的历史更新记录？</strong><br>
-                            完整历史发布记录（v0.1.0 及之前）已集中归档在 GitHub 官方仓库中，便于按版本精准溯源。
+                            完整历史发布记录（v0.1.1 及之前）已集中归档在 GitHub 官方仓库中，便于按版本精准溯源。
                         </div>
                         <div style="display: flex; gap: 8px;">
                             <a href="https://github.com/sellength/ms-rewards-enhanced/blob/dev/CUSTOM_CHANGELOG.md" target="_blank" rel="noopener noreferrer" class="btn-action btn-primary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; padding: 8px 14px; white-space: nowrap;">

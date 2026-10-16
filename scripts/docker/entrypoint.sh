@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensure Playwright uses preinstalled browsers
+# Ensure Playwright uses preinstalled browsers and mark container environment
 export PLAYWRIGHT_BROWSERS_PATH=0
+export DOCKER_CONTAINER=true
 
 SCRIPT_DIR="/usr/src/microsoft-rewards-script"
 
@@ -156,8 +157,37 @@ if [ "${API_MODE:-false}" = "true" ]; then
 fi
 
 if [ "${WEB_MODE:-false}" = "true" ]; then
+  export TZ
   export HOST="${HOST:-0.0.0.0}"
   export PORT="${PORT:-3888}"
+
+  SCHEDULE_OVERRIDE="${SCHEDULE_FILE:-$SCRIPT_DIR/config/schedule.json}"
+
+  if [ -f "$SCHEDULE_OVERRIDE" ]; then
+    echo "[entrypoint] Found $SCHEDULE_OVERRIDE - applying it (overrides CRON_SCHEDULE)."
+    if node scripts/api/apply-schedule.js; then
+      cron -f &
+      echo "[entrypoint] Cron started in background (schedule: from schedule.json, TZ: $TZ)"
+    else
+      echo "ERROR: Could not apply $SCHEDULE_OVERRIDE." >&2
+      exit 1
+    fi
+  elif [ -n "${CRON_SCHEDULE:-}" ]; then
+    if [ ! -f /etc/cron.d/microsoft-rewards-cron.template ]; then
+      echo "ERROR: Cron template /etc/cron.d/microsoft-rewards-cron.template not found." >&2
+      exit 1
+    fi
+    envsubst < /etc/cron.d/microsoft-rewards-cron.template > /etc/cron.d/microsoft-rewards-cron
+    chmod 0644 /etc/cron.d/microsoft-rewards-cron
+    if [ "$IS_ROOT" = "true" ]; then
+      crontab -u node /etc/cron.d/microsoft-rewards-cron
+    else
+      crontab /etc/cron.d/microsoft-rewards-cron 2>/dev/null || true
+    fi
+    cron -f &
+    echo "[entrypoint] Cron started in background (schedule: $CRON_SCHEDULE, TZ: $TZ)"
+  fi
+
   echo "[entrypoint] Starting Fluent Web Console on ${HOST}:${PORT} as unprivileged node user at $(date)"
   if [ -n "$RUN_AS_NODE" ]; then
     exec $RUN_AS_NODE node web.mjs

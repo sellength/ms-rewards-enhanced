@@ -1,3 +1,4 @@
+import fs from 'fs'
 import rebrowser, { BrowserContext } from 'patchright'
 import { newInjectedContext } from 'fingerprint-injector'
 import { BrowserFingerprintWithHeaders, FingerprintGenerator } from 'fingerprint-generator'
@@ -68,7 +69,12 @@ class Browser {
                 : undefined
 
             const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0
-            const sandboxDisabled = process.platform === 'linux' && runningAsRoot
+            const runningInContainer =
+                process.platform === 'linux' &&
+                (process.env.DOCKER_CONTAINER === 'true' ||
+                    fs.existsSync('/.dockerenv') ||
+                    fs.existsSync('/run/.containerenv'))
+            const sandboxDisabled = process.platform === 'linux' && (runningAsRoot || runningInContainer)
             const sandboxArgs = sandboxDisabled ? ['--no-sandbox', '--disable-setuid-sandbox'] : []
             const chromiumSandbox = !sandboxDisabled
 
@@ -85,11 +91,12 @@ class Browser {
             }
 
             const offScreenArgs = !headless ? ['--window-position=-3000,-3000', '--window-size=1280,800'] : []
+            const sandboxStatus = sandboxDisabled ? (runningAsRoot ? 'disabled-root' : 'disabled-container') : 'enabled'
 
             this.bot.logger.info(
                 this.bot.isMobile,
                 'BROWSER',
-                `Launching bundled patched Chromium (Edge UA) | headless=${headless} | offscreen=${!headless ? 'yes' : 'no'} | platform=${process.platform} | proxy=${hasProxy ? 'yes' : 'no'} | tls=${ignoreCertificateErrors ? 'verification-disabled' : 'verified'} | sandbox=${sandboxDisabled ? 'disabled-root' : 'enabled'}`
+                `Launching bundled patched Chromium (Edge UA) | headless=${headless} | offscreen=${!headless ? 'yes' : 'no'} | platform=${process.platform} | proxy=${hasProxy ? 'yes' : 'no'} | tls=${ignoreCertificateErrors ? 'verification-disabled' : 'verified'} | sandbox=${sandboxStatus}`
             )
 
             browser = await rebrowser.chromium.launch({

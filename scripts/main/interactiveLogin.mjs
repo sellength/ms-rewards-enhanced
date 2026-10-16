@@ -157,6 +157,14 @@ async function extractEmail(page, context, storageState) {
 }
 
 async function main() {
+    if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+        log('当前运行在无图形界面的 Linux / Docker 容器环境，无法直接弹出桌面浏览器窗口。', 'warn')
+        log('请采用以下方式之一完成登录：', 'info')
+        log('1) 在 .env 或控制台设置中填写账号邮箱（及密码/2FA），点击“运行任务”；若使用 Authenticator 无密码验证，在实时日志中查看配对数字并在手机端确认；', 'info')
+        log('2) 或在带图形界面的宿主机完成首次窗口登录后，将 sessions 目录挂载至容器。', 'info')
+        process.exit(1)
+    }
+
     log('正在启动本地微软官方登录窗口...')
     log('提示：请在弹出的官方浏览器窗口中直接登录您的微软账号。')
     log('程序全程不收集密码或密钥，登录成功后会自动提取会话 Cookie 并关闭窗口。')

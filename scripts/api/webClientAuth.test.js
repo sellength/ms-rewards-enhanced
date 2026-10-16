@@ -59,7 +59,8 @@ const {
     isValidOrigin,
     reloadAllowedHosts,
     reloadTrustedProxies,
-    isProxyTrusted
+    isProxyTrusted,
+    getSavedAccount
 } = await import('../../web.mjs')
 
 test.after(() => {
@@ -1353,6 +1354,51 @@ test('Web 局域网访问与端口映射: parseHostHeader 端口严检 + isValid
         false,
         'Host 端口非法时必须拒绝'
     )
+
+    // 3.6 ALLOWED_HOSTS 网段通配符与防伪造域名绕过校验
+    reloadAllowedHosts('localhost,127.0.0.1,192.168.*,10.*,*.local,*')
+    assert.equal(isValidHost('192.168.1.100:3888'), true, '192.168.* 必须放行合法局域网 IPv4')
+    assert.equal(isValidHost('10.0.0.5:3888'), true, '10.* 必须放行合法内网 IPv4')
+    assert.equal(isValidHost('my-mac.local:3888'), true, '*.local 必须放行 mDNS 局域网主机名')
+    assert.equal(
+        isValidOrigin('http://192.168.1.100:3888', null, '192.168.1.100:3888', false),
+        true,
+        '192.168.* 下合法局域网 Origin 必须放行'
+    )
+    assert.equal(
+        isValidHost('192.168.evil.com:3888'),
+        false,
+        '192.168.* 严禁匹配伪造域名 192.168.evil.com (防 DNS Rebinding)'
+    )
+    assert.equal(
+        isValidHost('10.attacker.org:3888'),
+        false,
+        '10.* 严禁匹配伪造域名 10.attacker.org'
+    )
+    assert.equal(
+        isValidHost('192.168.999.1:3888'),
+        false,
+        '非法超出 255 的伪 IPv4 段必须被拒绝'
+    )
+    assert.equal(
+        isValidHost('evil.com:3888'),
+        false,
+        '裸通配符 * 必须被忽略，绝不可放行全网任意域名'
+    )
+    reloadAllowedHosts('192.168.1.100,localhost')
+
+    // 3.7 Docker env_file 环境变量账号回退测试
+    const envOnlyAcc = getSavedAccount(
+        {
+            ACCOUNT_1_EMAIL: 'docker_user@outlook.com',
+            ACCOUNT_1_PASSWORD: 'docker_secret',
+            ACCOUNT_1_GEO_LOCALE: 'US',
+            ACCOUNT_1_LANG_CODE: 'en'
+        },
+        path.join(os.tmpdir(), 'non-existent-env-file-999999')
+    )
+    assert.equal(envOnlyAcc.email, 'docker_user@outlook.com', '无磁盘 .env 文件时必须回退读取环境变量 ACCOUNT_1_EMAIL')
+    assert.equal(envOnlyAcc.password, 'docker_secret', '无磁盘 .env 文件时必须回退读取环境变量 ACCOUNT_1_PASSWORD')
 
     // 4. 真实 HTTP 集成测试：协议不匹配与跨端口拦截
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ms-origin-test-'))

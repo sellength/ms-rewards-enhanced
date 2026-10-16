@@ -180,3 +180,25 @@ test('.dockerignore 安全与打包规则校验：确保敏感文件全排除且
         )
     }
 })
+
+test('Docker 容器沙箱自适应、WEB_MODE 定时调度与安装文档一致性校验', () => {
+    const browserTs = fs.readFileSync(path.join(projectRoot, 'src/browser/Browser.ts'), 'utf8')
+    assert.ok(
+        browserTs.includes("fs.existsSync('/.dockerenv')") && browserTs.includes("process.env.DOCKER_CONTAINER === 'true'"),
+        'Browser.ts 必须检测 Linux 容器环境以自动禁用無法创建的 Chromium 沙箱'
+    )
+
+    const entrypointSh = fs.readFileSync(path.join(projectRoot, 'scripts/docker/entrypoint.sh'), 'utf8')
+    assert.ok(entrypointSh.includes('export DOCKER_CONTAINER=true'), 'entrypoint.sh 必须导出 DOCKER_CONTAINER=true')
+    const webModeBlock = entrypointSh.slice(entrypointSh.indexOf('if [ "${WEB_MODE:-false}" = "true" ]; then'))
+    assert.ok(
+        webModeBlock.includes('CRON_SCHEDULE') && webModeBlock.includes('cron -f &'),
+        'entrypoint.sh 在 WEB_MODE=true 分支下必须支持配置并后台启动 cron'
+    )
+
+    const readmeMd = fs.readFileSync(path.join(projectRoot, 'README.md'), 'utf8')
+    assert.ok(!readmeMd.includes('http://user:pass@proxy-server:port'), 'README.md 绝不可包含违反 Validator 规则的内联代理凭据示例')
+    assert.ok(readmeMd.includes('ACCOUNT_1_PROXY_PORT='), 'README.md 必须包含拆项的 ACCOUNT_1_PROXY_PORT 示例')
+    assert.ok(readmeMd.includes('-e ALLOWED_HOSTS='), 'README.md 的方式 B docker run 必须包含 -e ALLOWED_HOSTS 参数')
+})
+

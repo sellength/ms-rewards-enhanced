@@ -1,5 +1,14 @@
 # 🛠️ Microsoft Rewards 定制版本与变更历史 (Custom Patch Changelog)
 
+## 2026-10-16 — [v0.1.2] Docker 容器沙箱修复、局域网安全通配与安装体验校准
+
+- REQ-DOCKER-INSTALL-FIX-AND-RELEASE-20261016：
+  - 容器内 Chromium 沙箱自适应：修复 Linux Docker 容器降权为非 root 用户（`node`）后启动内置 Patchright Chromium 报 `No usable sandbox!` 崩溃的问题，自动识别容器环境（`/.dockerenv`、`/run/.containerenv`、`DOCKER_CONTAINER=true`）并启用无沙箱参数；
+  - 环境变量账号无缝回退：[`web.mjs`](file:///Users/junzhuang/Antigravity/ms_rewards/web.mjs) 的 `getSavedAccount()` 支持回退读取 `process.env.ACCOUNT_1_*`，解决 Docker `env_file` 模式下控制台显示未配置账号以及触发任务时覆盖账号为空的问题；
+  - 局域网 `ALLOWED_HOSTS` 安全通配：支持 `192.168.*`、`10.*` 等网段前缀通配符及 `*.local` 子域通配符，严格校验被匹配主机为合法四段纯数字 IPv4，阻断 `192.168.evil.com` 等伪造域名 DNS Rebinding 攻击；
+  - 容器定时与秒级优雅退出：[`scripts/docker/entrypoint.sh`](file:///Users/junzhuang/Antigravity/ms_rewards/scripts/docker/entrypoint.sh) 在 `WEB_MODE=true` 下补齐 `CRON_SCHEDULE` / `schedule.json` 后台 `cron` 启动；[`web.mjs`](file:///Users/junzhuang/Antigravity/ms_rewards/web.mjs) 监听 `SIGTERM` / `SIGINT` 实现 `docker compose down` 秒级（0.2s）停止；
+  - 安装指引校准：同步 [`README.md`](file:///Users/junzhuang/Antigravity/ms_rewards/README.md) 与 [`compose.yaml`](file:///Users/junzhuang/Antigravity/ms_rewards/compose.yaml) 镜像版本至 `0.1.2`，修正 `.env` 代理配置拆项写法、补齐方式 B `-e ALLOWED_HOSTS` 参数及无头登录指引。
+
 ## 2026-10-08 — [v0.1.1] 跨天状态隔离重置、Daily Set计分修正与关于面板
 
 - REQ-VERSION-ABOUT-AND-DAY-ISOLATION-20261008：

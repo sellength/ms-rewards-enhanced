@@ -459,12 +459,50 @@ export function parseHostHeader(hostHeader, isHttps = false) {
 }
 
 const ALLOWED_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+const ALLOWED_HOST_MATCHERS = []
+
+function isValidIpv4Address(host) {
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false
+    return host.split('.').every(part => {
+        const n = Number(part)
+        return n >= 0 && n <= 255
+    })
+}
+
+function buildHostWildcardMatcher(pattern) {
+    if (!pattern || pattern === '*' || !pattern.includes('*')) return null
+    // 1. IPv4 网段前缀通配符 (如 192.168.*, 10.*, 172.16.*, 192.168.1.*)
+    // 严格要求被匹配主机必须是合法的四段纯数字 IPv4，彻底阻断 192.168.evil.com 等恶意域名伪造
+    if (/^\d{1,3}(\.\d{1,3}){0,2}\.\*$/.test(pattern)) {
+        const prefix = pattern.slice(0, -1) // 保留末尾的 '.'，如 '192.168.'
+        return (hostname) => isValidIpv4Address(hostname) && hostname.startsWith(prefix)
+    }
+    // 2. 受限子域名后缀通配符 (如 *.local, *.lan)，要求至少包含一个非通配具体标签
+    if (/^\*\.[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(pattern)) {
+        const suffix = pattern.slice(1) // 保留开头的 '.'，如 '.local'
+        return (hostname) => hostname.length > suffix.length && hostname.endsWith(suffix)
+    }
+    return null
+}
+
+function isAllowedHostname(hostname) {
+    if (!hostname) return false
+    if (ALLOWED_HOSTNAMES.has(hostname)) return true
+    return ALLOWED_HOST_MATCHERS.some(matcher => matcher(hostname))
+}
 
 export function reloadAllowedHosts(envAllowedHosts = process.env.ALLOWED_HOSTS) {
     ALLOWED_HOSTNAMES.clear()
+    ALLOWED_HOST_MATCHERS.length = 0
     ;['127.0.0.1', 'localhost', '::1', '[::1]'].forEach(h => ALLOWED_HOSTNAMES.add(h))
     if (envAllowedHosts) {
         envAllowedHosts.split(',').map(s => s.trim().toLowerCase()).filter(Boolean).forEach(h => {
+            if (h.includes('*')) {
+                const hostPattern = h.includes(':') ? h.split(':')[0] : h
+                const matcher = buildHostWildcardMatcher(hostPattern)
+                if (matcher) ALLOWED_HOST_MATCHERS.push(matcher)
+                return
+            }
             const parsed = parseHostHeader(h)
             if (parsed) {
                 ALLOWED_HOSTNAMES.add(parsed.hostname)
@@ -479,7 +517,7 @@ reloadAllowedHosts()
 export function isValidHost(hostHeader, isHttps = false) {
     const parsed = parseHostHeader(hostHeader, isHttps)
     if (!parsed) return false
-    return ALLOWED_HOSTNAMES.has(parsed.hostname)
+    return isAllowedHostname(parsed.hostname)
 }
 
 export function isValidOrigin(originHeader, expectedPort = null, hostHeader = null, isHttps = false) {
@@ -493,7 +531,7 @@ export function isValidOrigin(originHeader, expectedPort = null, hostHeader = nu
         if (u.protocol !== expectedProtocol) return false
 
         // 2. 检查 Origin 的 hostname 是否属于允许列表
-        if (!ALLOWED_HOSTNAMES.has(originHostname)) return false
+        if (!isAllowedHostname(originHostname)) return false
 
         const originPort = u.port ? Number(u.port) : (isHttps ? 443 : 80)
 
@@ -3780,30 +3818,30 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/about' && req.method === 'GET') {
-        let pkg = { name: 'ms-rewards-enhanced', version: '0.1.1', license: 'GPL-3.0-or-later' }
+        let pkg = { name: 'ms-rewards-enhanced', version: '0.1.2', license: 'GPL-3.0-or-later' }
         try {
             pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8'))
         } catch (_) {}
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({
             name: pkg.name || 'ms-rewards-enhanced',
-            version: pkg.version || '0.1.1',
+            version: pkg.version || '0.1.2',
             description: pkg.description || 'Microsoft Rewards Automation Enhanced Edition with Fluent Web UI & Adaptive Agent',
             license: pkg.license || 'GPL-3.0-or-later',
             upstream: 'https://github.com/TheNetsky/Microsoft-Rewards-Script',
             repository: 'https://github.com/sellength/ms-rewards-enhanced',
-            dockerImage: `ghcr.io/sellength/ms-rewards-enhanced:${pkg.version || '0.1.1'}`,
+            dockerImage: `ghcr.io/sellength/ms-rewards-enhanced:${pkg.version || '0.1.2'}`,
             changelogUrl: 'https://github.com/sellength/ms-rewards-enhanced/blob/dev/CUSTOM_CHANGELOG.md',
             releasesUrl: 'https://github.com/sellength/ms-rewards-enhanced/releases',
             currentRelease: {
-                version: `v${pkg.version || '0.1.1'}`,
-                date: '2026-10-08',
-                title: '跨天状态隔离重置、Daily Set计分修正与关于面板',
+                version: `v${pkg.version || '0.1.2'}`,
+                date: '2026-10-16',
+                title: 'Docker 容器沙箱修复、局域网安全通配与安装体验校准',
                 highlights: [
-                    '⚡️ 跨天日历隔离与缓存自动重置：修复新的一天到来时移动端状态未自动归零、导致残留上一日 260/380 分缓存的问题',
-                    '🎯 Daily Set 独立计分修正：修复 /api/unified/state 中每日三连任务展示的已得积分被全天总分污染的问题',
-                    'ℹ️ 全新“关于项目”面板：侧边栏与主区域新增 Fluent 风格关于页面，实时展示系统版本与最新更新亮点',
-                    '📖 历史更新日志直达：全量历史版本记录一键跳转至 GitHub 仓库查阅，保持 Web 控制台轻量利落'
+                    '🐳 容器内 Chromium 沙箱自适应：修复 Linux Docker 非特权降权用户下启动浏览器报 No usable sandbox 崩溃的问题',
+                    '🔑 环境变量账号无缝回退：支持直接读取 Docker env_file 注入的 ACCOUNT_1_* 凭据，解决控制台账号显示为空与覆盖问题',
+                    '🌐 局域网 ALLOWED_HOSTS 安全通配：支持 192.168.* / 10.* 网段通配符并严格校验四段纯数字 IPv4，阻断伪造域名重绑定',
+                    '⏰ 容器定时与优雅退出：补齐 WEB_MODE 下 CRON_SCHEDULE 后台定时调度，支持 SIGTERM 秒级优雅停止容器'
                 ]
             }
         }))
@@ -4350,18 +4388,20 @@ const server = http.createServer(async (req, res) => {
 const envFilePath = path.join(__dirname, '.env')
 
 function getSavedAccount() {
+    const env = arguments[0] || process.env
+    const targetEnvPath = arguments[1] || envFilePath
+    const acc = {
+        email: (env.ACCOUNT_1_EMAIL || '').trim(),
+        password: (env.ACCOUNT_1_PASSWORD || '').trim(),
+        totpSecret: (env.ACCOUNT_1_TOTP_SECRET || '').trim(),
+        recoveryEmail: (env.ACCOUNT_1_RECOVERY_EMAIL || '').trim(),
+        geoLocale: (env.ACCOUNT_1_GEO_LOCALE || '').trim() || 'auto',
+        langCode: (env.ACCOUNT_1_LANG_CODE || '').trim() || 'en'
+    }
     try {
-        if (fs.existsSync(envFilePath)) {
-            const raw = fs.readFileSync(envFilePath, 'utf-8')
+        if (fs.existsSync(targetEnvPath)) {
+            const raw = fs.readFileSync(targetEnvPath, 'utf-8')
             const lines = raw.split('\n')
-            const acc = {
-                email: '',
-                password: '',
-                totpSecret: '',
-                recoveryEmail: '',
-                geoLocale: 'auto',
-                langCode: 'en'
-            }
             lines.forEach(l => {
                 const match = l.match(/^\s*ACCOUNT_1_([A-Z_]+)\s*=\s*(.*)$/)
                 if (match) {
@@ -4371,14 +4411,13 @@ function getSavedAccount() {
                     if (key === 'PASSWORD') acc.password = val
                     if (key === 'TOTP_SECRET') acc.totpSecret = val
                     if (key === 'RECOVERY_EMAIL') acc.recoveryEmail = val
-                    if (key === 'GEO_LOCALE') acc.geoLocale = val
-                    if (key === 'LANG_CODE') acc.langCode = val
+                    if (key === 'GEO_LOCALE' && val) acc.geoLocale = val
+                    if (key === 'LANG_CODE' && val) acc.langCode = val
                 }
             })
-            return acc
         }
     } catch (e) {}
-    return { email: '', password: '', totpSecret: '', recoveryEmail: '', geoLocale: 'auto', langCode: 'en' }
+    return acc
 }
 
 function getResolvedAccountRegion(email) {
@@ -4411,6 +4450,12 @@ function saveAccount(acc) {
             `ACCOUNT_1_GEO_LOCALE=${acc.geoLocale || 'auto'}`,
             `ACCOUNT_1_LANG_CODE=${acc.langCode || 'en'}`
         ]
+        process.env.ACCOUNT_1_EMAIL = acc.email || ''
+        process.env.ACCOUNT_1_PASSWORD = acc.password || ''
+        process.env.ACCOUNT_1_TOTP_SECRET = acc.totpSecret || ''
+        process.env.ACCOUNT_1_RECOVERY_EMAIL = acc.recoveryEmail || ''
+        process.env.ACCOUNT_1_GEO_LOCALE = acc.geoLocale || 'auto'
+        process.env.ACCOUNT_1_LANG_CODE = acc.langCode || 'en'
         fs.writeFileSync(envFilePath, lines.join('\n') + '\n', 'utf-8')
         return true
     } catch (e) {
@@ -4548,7 +4593,7 @@ async function dispatchHitlWebhookAlert(notification) {
     } catch (_) {}
 }
 
-export { server, readRequestBody }
+export { server, readRequestBody, getSavedAccount }
 
 const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
@@ -4560,4 +4605,12 @@ if (isDirectRun && process.env.NODE_ENV !== 'test' && !process.env.MS_DISABLE_AU
         console.log(`📱 正在监听浏览器连接...\n`)
         scheduleBackgroundSync()
     })
+
+    const gracefulShutdown = () => {
+        try { stopBotProcess() } catch (_) {}
+        try { server.close(() => process.exit(0)) } catch (_) {}
+        setTimeout(() => process.exit(0), 1000).unref()
+    }
+    process.on('SIGTERM', gracefulShutdown)
+    process.on('SIGINT', gracefulShutdown)
 }
