@@ -1,5 +1,12 @@
 # 🛠️ Microsoft Rewards 定制版本与变更历史 (Custom Patch Changelog)
 
+## 2026-10-22 — [v0.1.3] 跨平台任务运行期动态防休眠守护与完成后自动释放
+
+- REQ-CROSS-PLATFORM-SLEEP-GUARD-20261022：
+  - 跨平台按需防系统休眠（[`scripts/api/sleepInhibitor.mjs`](file:///Users/junzhuang/Antigravity/ms_rewards/scripts/api/sleepInhibitor.mjs)、[`src/util/SleepInhibitor.ts`](file:///Users/junzhuang/Antigravity/ms_rewards/src/util/SleepInhibitor.ts)）：支持 macOS (`caffeinate -i -s -w <pid>`)、Windows (`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`) 与 Linux (`systemd-inhibit --what=sleep:idle`)，仅阻止系统进入睡眠（Sleep），允许显示器正常熄屏与系统锁屏；
+  - 任务级生命周期严格绑定：仅在任务启动时申请防休眠锁，当任务执行完成、异常退出或手动停止时立即释放防休眠锁并恢复系统正常睡眠策略；移除 [`web.sh`](file:///Users/junzhuang/Antigravity/ms_rewards/web.sh) 中空闲常驻的 `caffeinate` 死锁；
+  - Docker 宿主机与浏览器双层联动：新增宿主机轻量防休眠守护脚本 [`scripts/docker/host-sleep-guard.mjs`](file:///Users/junzhuang/Antigravity/ms_rewards/scripts/docker/host-sleep-guard.mjs)（通过共享 `sessions/.task_running.json` 感知容器内 Web 或定时任务运行状态，按需加锁并在任务完成后即刻释放）及 [`public/index.html`](file:///Users/junzhuang/Antigravity/ms_rewards/public/index.html) 动态 `WakeLock` 兜底。
+
 ## 2026-10-16 — [v0.1.2] Docker 容器沙箱修复、局域网安全通配与安装体验校准
 
 - REQ-DOCKER-INSTALL-FIX-AND-RELEASE-20261016：

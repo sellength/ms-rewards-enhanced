@@ -16,6 +16,7 @@ import Utils, { isBrowserClosedError } from './util/Utils'
 import { loadAccounts, loadConfig } from './util/Load'
 import { closeSessionStore, loadResolvedRegion, saveResolvedRegion } from './util/SessionStore'
 import { checkNodeVersion } from './util/Validator'
+import { SystemSleepInhibitor } from './util/SleepInhibitor'
 import { normalizeCountry, resolveAccountLocale } from './util/Locale'
 import type { AccountLocale } from './util/Locale'
 import { resolveOfficialDailySetDate } from './util/DailySetCycle'
@@ -1380,17 +1381,29 @@ export { executionContext }
 async function main(): Promise<void> {
     checkNodeVersion()
     const rewardsBot = new MicrosoftRewardsBot()
+    const sleepInhibitor = new SystemSleepInhibitor()
+    const sleepGuardStatus = sleepInhibitor.acquire(process.pid)
+    if (sleepGuardStatus.active) {
+        rewardsBot.logger.info(
+            'main',
+            'SLEEP-GUARD',
+            `System sleep inhibitor active (${sleepGuardStatus.platform}/${sleepGuardStatus.method}, display lock allowed)`
+        )
+    }
 
     process.on('beforeExit', () => {
+        sleepInhibitor.release()
         void flushAllWebhooks()
     })
     process.on('SIGINT', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGINT received, flushing and exiting...')
+        sleepInhibitor.release()
         await flushAllWebhooks()
         process.exit(130)
     })
     process.on('SIGTERM', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGTERM received, flushing and exiting...')
+        sleepInhibitor.release()
         await flushAllWebhooks()
         process.exit(143)
     })
@@ -1403,6 +1416,7 @@ async function main(): Promise<void> {
             )
             return
         }
+        sleepInhibitor.release()
         rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error)
         await flushAllWebhooks()
         process.exit(1)
@@ -1416,6 +1430,7 @@ async function main(): Promise<void> {
             )
             return
         }
+        sleepInhibitor.release()
         rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
         await flushAllWebhooks()
         process.exit(1)
@@ -1428,6 +1443,8 @@ async function main(): Promise<void> {
         rewardsBot.logger.error('main', 'MAIN-ERROR', error as Error)
         await flushAllWebhooks()
         process.exitCode = 1
+    } finally {
+        sleepInhibitor.release()
     }
 }
 

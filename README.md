@@ -54,7 +54,7 @@
 
 ## 🐳 快速开始：Docker 容器部署 (推荐)
 
-项目预构建 Docker 镜像托管于 GitHub Container Registry (GHCR)：`ghcr.io/sellength/ms-rewards-enhanced:0.1.2`（或使用 `:latest` 标签）。
+项目预构建 Docker 镜像托管于 GitHub Container Registry (GHCR)：`ghcr.io/sellength/ms-rewards-enhanced:0.1.3`（或使用 `:latest` 标签）。
 
 ### 1. 准备环境配置文件 (`.env`)
 
@@ -83,7 +83,7 @@ ACCOUNT_1_EMAIL=your_email@outlook.com
 ```yaml
 services:
   ms-rewards:
-    image: ghcr.io/sellength/ms-rewards-enhanced:0.1.2
+    image: ghcr.io/sellength/ms-rewards-enhanced:0.1.3
     container_name: ms-rewards-enhanced
     restart: unless-stopped
     ports:
@@ -129,7 +129,7 @@ docker run -d \
   -e WEB_MODE=true \
   -e ALLOWED_HOSTS="localhost,127.0.0.1,192.168.*,10.*" \
   --restart unless-stopped \
-  ghcr.io/sellength/ms-rewards-enhanced:0.1.2
+  ghcr.io/sellength/ms-rewards-enhanced:0.1.3
 ```
 
 ---

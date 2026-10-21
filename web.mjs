@@ -12,6 +12,7 @@ import { sanitizeAllDirtyCookies } from './scripts/api/sessionSanitizer.mjs'
 import { clearAccountSessionStorage, clearAccountLoginFiles } from './scripts/api/sessionLogout.mjs'
 import { createLiveRunSync, shouldRefreshRun } from './scripts/api/liveRunSync.mjs'
 import { BOT_WARNING_KEY, evaluateBotChallengePolicy, formatHitlWebhookPayload } from './scripts/api/hitlBotChallenge.mjs'
+import { createSleepInhibitor } from './scripts/api/sleepInhibitor.mjs'
 
 import {
     earnKeepEarningIds,
@@ -582,6 +583,7 @@ const plannedTaskIds = { desktop: [], mobile: [] }
 const sseClients = new Set()
 const runtimeReplay = createRuntimeReplay()
 const dailySetProbeState = createDailySetProbeState()
+const sleepInhibitor = createSleepInhibitor()
 let activeProbeAccount = null
 let latestBotChallengeAlert = null
 const POINTS_SCHEMA_VERSION = 5
@@ -2397,6 +2399,7 @@ function runBotProcess(mode = 'all', preflightState = null) {
         if (mode === 'login') {
             try { activeBotProcess.kill('SIGKILL') } catch (_) {}
             activeBotProcess = null
+            sleepInhibitor.release()
         } else {
             return
         }
@@ -2435,6 +2438,7 @@ function runBotProcess(mode = 'all', preflightState = null) {
             ...cleanEnv,
             FORCE_COLOR: '0',
             REWARDS_MODE: mode,
+            REWARDS_SLEEP_INHIBITED_BY_PARENT: '1',
             REWARDS_DAILY_SET_DATE: preflightState?.dailySetDate || '',
             ACCOUNT_1_EMAIL: activeEmail || '',
             REWARDS_ACTIVE_PROFILE_EMAIL: activeEmail || '',
@@ -2442,6 +2446,35 @@ function runBotProcess(mode = 'all', preflightState = null) {
             REWARDS_ACTIVE_PROFILE_REGION: activeProf?.region || 'US'
         }
     })
+
+    const sleepGuardStatus = sleepInhibitor.acquire({
+        targetPid: activeBotProcess.pid || process.pid,
+        reason: mode,
+        sessionDir: getSessionDir()
+    })
+    broadcast({
+        type: 'wakeLock',
+        active: true,
+        mode,
+        hostGuardActive: Boolean(sleepGuardStatus.hostGuardActive)
+    })
+    if (sleepGuardStatus.active) {
+        broadcast({
+            type: 'log',
+            platform: mode,
+            time: getTimeStr(),
+            msg: `🛡️ 已激活系统防休眠守护 (${sleepGuardStatus.platform}/${sleepGuardStatus.method}，允许熄屏与锁屏，任务完成后自动释放)`,
+            level: 'info'
+        })
+    } else if (sleepGuardStatus.hostGuardActive) {
+        broadcast({
+            type: 'log',
+            platform: mode,
+            time: getTimeStr(),
+            msg: `🛡️ 已联动宿主机防休眠守护 (${sleepGuardStatus.hostGuardPlatform}/${sleepGuardStatus.hostGuardMethod}，允许熄屏与锁屏，任务完成后自动释放)`,
+            level: 'info'
+        })
+    }
 
     const liveSync = createLiveRunSync({
         refresh: async () => {
@@ -2592,6 +2625,17 @@ function runBotProcess(mode = 'all', preflightState = null) {
                     }
                 }
             }
+        }
+        const releasedGuard = sleepInhibitor.release()
+        broadcast({ type: 'wakeLock', active: false, mode })
+        if (releasedGuard) {
+            broadcast({
+                type: 'log',
+                platform: mode,
+                time: getTimeStr(),
+                msg: '🔋 已释放防休眠守护锁，系统恢复正常睡眠策略',
+                level: 'info'
+            })
         }
         broadcast({ type: 'log', platform: mode, time: getTimeStr(), msg: `🏁 任务会话结束 (状态码: ${code})`, level: 'success' })
         broadcast({ type: 'action', platform: mode, action: '今日自动化完成' })
@@ -3371,6 +3415,8 @@ const server = http.createServer(async (req, res) => {
         res.write(`data: ${JSON.stringify({ type: 'state', data: getSavedState() })}\n\n`)
         res.write(`data: ${JSON.stringify({ type: 'mobileState', data: getSavedMobileState() })}\n\n`)
         res.write(`data: ${JSON.stringify({ type: 'runtimeSnapshot', data: runtimeReplay.snapshot() })}\n\n`)
+        const curSleepStatus = sleepInhibitor.status()
+        res.write(`data: ${JSON.stringify({ type: 'wakeLock', active: Boolean(activeBotProcess), hostGuardActive: Boolean(curSleepStatus.hostGuardActive) })}\n\n`)
         if (latestBotChallengeAlert) {
             res.write(`data: ${JSON.stringify({ type: 'botChallengeAlert', data: latestBotChallengeAlert })}\n\n`)
         }
@@ -3818,32 +3864,32 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/about' && req.method === 'GET') {
-        let pkg = { name: 'ms-rewards-enhanced', version: '0.1.2', license: 'GPL-3.0-or-later' }
+        let pkg = { name: 'ms-rewards-enhanced', version: '0.1.3', license: 'GPL-3.0-or-later' }
         try {
             pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8'))
         } catch (_) {}
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({
             name: pkg.name || 'ms-rewards-enhanced',
-            version: pkg.version || '0.1.2',
+            version: pkg.version || '0.1.3',
             description: pkg.description || 'Microsoft Rewards Automation Enhanced Edition with Fluent Web UI & Adaptive Agent',
             license: pkg.license || 'GPL-3.0-or-later',
             upstream: 'https://github.com/TheNetsky/Microsoft-Rewards-Script',
             repository: 'https://github.com/sellength/ms-rewards-enhanced',
-            dockerImage: `ghcr.io/sellength/ms-rewards-enhanced:${pkg.version || '0.1.2'}`,
+            dockerImage: `ghcr.io/sellength/ms-rewards-enhanced:${pkg.version || '0.1.3'}`,
             changelogUrl: 'https://github.com/sellength/ms-rewards-enhanced/blob/dev/CUSTOM_CHANGELOG.md',
             releasesUrl: 'https://github.com/sellength/ms-rewards-enhanced/releases',
             currentRelease: {
-                version: `v${pkg.version || '0.1.2'}`,
-                date: '2026-10-16',
-                title: 'Docker 容器沙箱修复、局域网安全通配与安装体验校准',
+                version: `v${pkg.version || '0.1.3'}`,
+                date: '2026-10-22',
+                title: '跨平台任务运行期动态防休眠守护与完成后自动释放',
                 highlights: [
-                    '🐳 容器内 Chromium 沙箱自适应：修复 Linux Docker 非特权降权用户下启动浏览器报 No usable sandbox 崩溃的问题',
-                    '🔑 环境变量账号无缝回退：支持直接读取 Docker env_file 注入的 ACCOUNT_1_* 凭据，解决控制台账号显示为空与覆盖问题',
-                    '🌐 局域网 ALLOWED_HOSTS 安全通配：支持 192.168.* / 10.* 网段通配符并严格校验四段纯数字 IPv4，阻断伪造域名重绑定',
-                    '⏰ 容器定时与优雅退出：补齐 WEB_MODE 下 CRON_SCHEDULE 后台定时调度，支持 SIGTERM 秒级优雅停止容器'
+                    '🛡️ 跨平台按需防系统休眠：支持 macOS (caffeinate -i -s)、Windows (SetThreadExecutionState) 与 Linux (systemd-inhibit)，仅阻止系统睡眠，允许屏幕正常熄屏与锁屏',
+                    '🔋 任务完成即刻释放：严格绑定任务运行周期，任务结束或停止后立即取消防休眠锁，彻底解决空闲常驻不休眠问题',
+                    '🐳 Docker 宿主机与浏览器双层联动：新增宿主机轻量防休眠伴侣脚本与 Web 控制台动态 WakeLock 兜底，穿透容器隔离'
                 ]
-            }
+            },
+            sleepGuard: sleepInhibitor.status()
         }))
         return
     }
@@ -4607,6 +4653,7 @@ if (isDirectRun && process.env.NODE_ENV !== 'test' && !process.env.MS_DISABLE_AU
     })
 
     const gracefulShutdown = () => {
+        try { sleepInhibitor.release() } catch (_) {}
         try { stopBotProcess() } catch (_) {}
         try { server.close(() => process.exit(0)) } catch (_) {}
         setTimeout(() => process.exit(0), 1000).unref()
